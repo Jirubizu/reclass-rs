@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/backend-vmem", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+reclass-core = { path = "crates/core" }
+reclass-backend-vmem = { path = "crates/backend-vmem" }
+vmem = { git = "https://github.com/Jirubizu/vmem.git" }
+thiserror = "1"
+anyhow = "1.0.103"
+bytemuck = "1.25.0"
+serde = { version = "1.0.103", features = ["derive"] }
+ron = "0.12.2"
+
+[profile.bench]
+debug = true

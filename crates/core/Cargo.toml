@@ -1,0 +1,28 @@
+[package]
+name = "reclass-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ReClass-style live memory model: nodes, classes, address expressions, render engine"
+
+[features]
+default = ["mock", "serde"]
+# In-memory MemoryBackend for tests, benches, and the app's offline mode.
+mock = ["dep:parking_lot"]
+# serde save/load of the class registry + expressions.
+serde = ["dep:serde", "dep:ron"]
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
+parking_lot = { version = "0.12.5", optional = true }
+ron = { workspace = true, optional = true }
+
+[dev-dependencies]
+criterion = "0.8.2"
+serde = { workspace = true }
+ron = { workspace = true }
+
+[[bench]]
+name = "engine"
+harness = false

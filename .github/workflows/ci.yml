@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  build-test:
+    name: fmt + clippy + test + bench-compile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout reclass-rs
+        uses: actions/checkout@v4
+        with:
+          path: reclass-rs
+
+      # `vmem` is an unpublished sibling path dependency (`../vmem`).
+      - name: Checkout vmem (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: Jirubizu/vmem
+          path: vmem
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            reclass-rs/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('reclass-rs/Cargo.lock') }}
+
+      - name: rustfmt
+        working-directory: reclass-rs
+        run: cargo fmt --all --check
+
+      - name: clippy (all targets, all features)
+        working-directory: reclass-rs
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: test (all features)
+        working-directory: reclass-rs
+        # ptrace-based tests need an unrestricted ptrace scope.
+        run: |
+          sudo sysctl -w kernel.yama.ptrace_scope=0 || true
+          cargo test --workspace --all-features
+
+      - name: bench compile-check
+        working-directory: reclass-rs
+        run: cargo bench -p reclass-core --bench engine --no-run

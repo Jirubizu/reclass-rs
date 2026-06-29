@@ -1,0 +1,30 @@
+[package]
+name = "reclass-backend-vmem"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MemoryBackend implementation over the vmem crate"
+
+[dependencies]
+reclass-core = { path = "../core", default-features = false }
+vmem = { workspace = true }
+thiserror = { workspace = true }
+libc = { version = "0.2.186", optional = true }
+
+[features]
+default = []
+# Phase 10 stretch: ptrace hardware-breakpoint access tracker.
+access-tracker = ["dep:libc"]
+
+[[bin]]
+name = "smoke"
+path = "src/bin/smoke.rs"
+
+[[bin]]
+name = "target"
+path = "src/bin/target.rs"
+
+[[bin]]
+name = "writer"
+path = "src/bin/writer.rs"
+required-features = ["access-tracker"]

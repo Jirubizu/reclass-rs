@@ -2,7 +2,7 @@
 //! the render engine, and apply edits. Unit-tested against `MockBackend`.
 
 use reclass_core::backend::Region;
-use reclass_core::codegen::{generate, Language};
+use reclass_core::codegen::{Language, generate};
 use reclass_core::project::{Project, View};
 use reclass_core::{
     AddrExpr, AddrInfo, ClassId, Engine, ExpandState, IntWidth, MemError, MemoryBackend, Node,

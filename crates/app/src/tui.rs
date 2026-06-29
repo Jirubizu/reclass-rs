@@ -7,11 +7,11 @@
 use std::io::{self, Stdout};
 use std::time::{Duration, Instant};
 
+use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -285,11 +285,7 @@ impl Tui {
         let trows = rows.iter().enumerate().map(|(i, r)| {
             let indent = "  ".repeat(r.depth as usize);
             let tri = if r.expandable {
-                if r.expanded {
-                    "▼ "
-                } else {
-                    "▶ "
-                }
+                if r.expanded { "▼ " } else { "▶ " }
             } else {
                 ""
             };

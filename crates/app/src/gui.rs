@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use eframe::egui;
-use reclass_backend_vmem::{list_processes, process_name, ProcInfo, VmemBackend};
+use reclass_backend_vmem::{ProcInfo, VmemBackend, list_processes, process_name};
 use reclass_core::codegen::Language;
 use reclass_core::{ClassId, IntWidth, Node, NodeKind, PathSeg, Row, TextEncoding};
 

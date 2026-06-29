@@ -644,7 +644,7 @@ mod tests {
         reg.push_node(a, Node::new("next", NodeKind::ClassPtr { class_id: a }))
             .unwrap();
         assert!(reg.validate().is_ok());
-        assert!(!reg.would_cycle(a, a) || true); // would_cycle only concerns inline
+        assert!(reg.would_cycle(a, a)); // would_cycle only concerns inline
         assert_eq!(reg.size_of(a), 12); // 4 + 8 (pointer)
     }
 

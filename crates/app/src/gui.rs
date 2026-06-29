@@ -425,10 +425,10 @@ impl ReClassApp {
             EditField::Value => {
                 // value writes need the live address+kind; resolve from rows
                 let rows = self.state.compute_rows();
-                if let Some(row) = rows.iter().find(|r| r.root == ed.root && r.path == ed.path) {
-                    if let Err(e) = self.state.write_value(row.address, &row.kind, &ed.buf) {
-                        self.error = Some(e);
-                    }
+                if let Some(row) = rows.iter().find(|r| r.root == ed.root && r.path == ed.path)
+                    && let Err(e) = self.state.write_value(row.address, &row.kind, &ed.buf)
+                {
+                    self.error = Some(e);
                 }
             }
         }
@@ -473,7 +473,7 @@ impl eframe::App for ReClassApp {
 
 impl ReClassApp {
     fn menu_bar(&mut self, root_ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        egui::Panel::top("menu").show_inside(root_ui, |ui| {
+        egui::Panel::top("menu").show(root_ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     ui.horizontal(|ui| {
@@ -511,7 +511,7 @@ impl ReClassApp {
     fn side_panel(&mut self, root_ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         egui::Panel::left("side")
             .default_size(260.0)
-            .show_inside(root_ui, |ui| {
+            .show(root_ui, |ui| {
                 ui.heading("Process");
                 ui.horizontal(|ui| {
                     ui.label("PID:");
@@ -647,7 +647,7 @@ impl ReClassApp {
     }
 
     fn central(&mut self, root_ui: &mut egui::Ui, rows: &[Row], actions: &mut Vec<Action>) {
-        egui::CentralPanel::default().show_inside(root_ui, |ui| {
+        egui::CentralPanel::default().show(root_ui, |ui| {
             // tab strip
             ui.horizontal_wrapped(|ui| {
                 let views: Vec<(usize, ClassId)> = self

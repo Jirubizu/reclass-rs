@@ -122,7 +122,7 @@ cargo run -p reclass-backend-vmem --bin smoke -- <pid> --modules libc.so.6
 3. **Build the class** — use *Add field* / *Add bytes* / the *Array* builder, or **left-click a field's Type** to change it. Memory shows live; **changed values flash red** and fade.
 4. **Edit** — double-click a value/name/comment to edit it; value edits are written back to the target.
 5. **Follow pointers** — expand a `Ptr`/`ClassPtr` (▶) to follow it; right-click a pointer → *Add bytes to target* to grow the pointed-to class without opening it.
-6. **Save/Load** — *File → Save/Load project* (RON). The attached process **name** is saved and reconnected automatically on load.
+6. **Save/Load** — *File → Save / Save as… / Open project…* open an in-app file browser (filters to `*.ron`); *File → Open recent* lists your last projects. Projects are RON; the attached process **name** is saved and reconnected automatically on load.
 7. **Export** — *View → Code generation* dumps the registry as C / C++ / Rust.
 
 ### Address expression syntax

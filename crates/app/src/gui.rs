@@ -65,6 +65,62 @@ struct ClassRename {
     focused: bool,
 }
 
+/// Open vs Save for the in-app file browser.
+#[derive(Clone, Copy, PartialEq)]
+enum FileMode {
+    Open,
+    Save,
+}
+
+/// Minimal, dependency-free file browser state (egui-rendered).
+struct FileDialog {
+    mode: FileMode,
+    dir: std::path::PathBuf,
+    filename: String,
+    error: Option<String>,
+}
+
+/// Most recent projects to remember.
+const MAX_RECENT: usize = 10;
+
+/// Per-user config directory: `$XDG_CONFIG_HOME/reclass-rs`, else
+/// `$HOME/.config/reclass-rs`, else `./.reclass-rs`.
+fn config_dir() -> std::path::PathBuf {
+    if let Some(x) = std::env::var_os("XDG_CONFIG_HOME") {
+        return std::path::PathBuf::from(x).join("reclass-rs");
+    }
+    if let Some(h) = std::env::var_os("HOME") {
+        return std::path::PathBuf::from(h)
+            .join(".config")
+            .join("reclass-rs");
+    }
+    std::path::PathBuf::from(".reclass-rs")
+}
+
+fn recent_file() -> std::path::PathBuf {
+    config_dir().join("recent.txt")
+}
+
+/// Load the recent-projects list (most-recent first), one path per line.
+fn load_recent() -> Vec<String> {
+    std::fs::read_to_string(recent_file())
+        .map(|s| {
+            s.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .take(MAX_RECENT)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Persist the recent-projects list (best-effort; errors ignored).
+fn save_recent(recent: &[String]) {
+    let _ = std::fs::create_dir_all(config_dir());
+    let _ = std::fs::write(recent_file(), recent.join("\n"));
+}
+
 /// Tracks which rows' values just changed so the UI can flash them and fade the
 /// highlight out. Keyed by `(root, path)`; egui-independent (time is a plain
 /// monotonic `f64` in seconds) so it is unit-testable.
@@ -183,6 +239,8 @@ struct ReClassApp {
     flash: FlashTracker,
     app_start: std::time::Instant,
     now: f64,
+    recent: Vec<String>,
+    file_dialog: Option<FileDialog>,
 }
 
 impl ReClassApp {
@@ -224,6 +282,8 @@ impl ReClassApp {
             flash: FlashTracker::default(),
             app_start: std::time::Instant::now(),
             now: 0.0,
+            recent: load_recent(),
+            file_dialog: None,
         };
         if let Some(pid) = initial_pid {
             app.apply(Action::AttachPid(pid));
@@ -359,6 +419,7 @@ impl ReClassApp {
                     self.error = Some(e);
                 } else {
                     self.state.status = format!("saved {path}");
+                    self.remember(&path);
                 }
             }
             Action::Load(path) => {
@@ -367,6 +428,7 @@ impl ReClassApp {
                 } else {
                     self.state.status = format!("loaded {path}");
                     self.clear_selection();
+                    self.remember(&path);
                     // auto-attach to the saved process name, if any
                     if let Some(name) = self.state.project.attach_name.clone() {
                         match VmemBackend::by_name(&name) {
@@ -457,13 +519,14 @@ impl eframe::App for ReClassApp {
         if self.flash.any_active(self.now) {
             ctx.request_repaint_after(Duration::from_millis(33));
         }
-        let mut actions: Vec<Action> = Vec::new();
 
+        let mut actions: Vec<Action> = Vec::new();
         self.menu_bar(ui, &mut actions);
         self.side_panel(ui, &mut actions);
         self.central(ui, &rows, &mut actions);
         self.memory_map_window(&ctx);
         self.codegen_window(&ctx);
+        self.file_dialog_window(&ctx, &mut actions);
 
         for a in actions {
             self.apply(a);
@@ -472,20 +535,190 @@ impl eframe::App for ReClassApp {
 }
 
 impl ReClassApp {
+    /// Open the in-app file browser. Starts in the current project's directory
+    /// (else `$HOME`, else cwd); Save mode prefills the current file name.
+    fn open_file_dialog(&mut self, mode: FileMode) {
+        let start = std::path::Path::new(&self.save_path)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty() && p.is_dir())
+            .map(|p| p.to_path_buf())
+            .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let filename = match mode {
+            FileMode::Save => std::path::Path::new(&self.save_path)
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "project.ron".to_string()),
+            FileMode::Open => String::new(),
+        };
+        self.file_dialog = Some(FileDialog {
+            mode,
+            dir: start,
+            filename,
+            error: None,
+        });
+    }
+
+    /// Record `path` as the current project and push it to the front of the
+    /// persisted recent list (deduped, capped, written to disk).
+    fn remember(&mut self, path: &str) {
+        self.save_path = path.to_string();
+        self.recent.retain(|p| p != path);
+        self.recent.insert(0, path.to_string());
+        self.recent.truncate(MAX_RECENT);
+        save_recent(&self.recent);
+    }
+
+    /// Render the in-app file browser (when open) and push `Load`/`Save` on confirm.
+    fn file_dialog_window(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let Some(mut fd) = self.file_dialog.take() else {
+            return;
+        };
+        let title = match fd.mode {
+            FileMode::Open => "Open project",
+            FileMode::Save => "Save project as",
+        };
+        let mut window_open = true;
+        let mut keep = true;
+        let mut confirm = false;
+        egui::Window::new(title)
+            .open(&mut window_open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(440.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("\u{2b06}")
+                        .on_hover_text("Parent directory")
+                        .clicked()
+                    {
+                        fd.dir = fd
+                            .dir
+                            .parent()
+                            .map(std::path::Path::to_path_buf)
+                            .unwrap_or_else(|| fd.dir.clone());
+                    }
+                    ui.monospace(fd.dir.display().to_string());
+                });
+                ui.separator();
+
+                // subdirectories first, then *.ron files
+                let mut dirs: Vec<String> = Vec::new();
+                let mut files: Vec<String> = Vec::new();
+                match std::fs::read_dir(&fd.dir) {
+                    Ok(rd) => {
+                        for entry in rd.flatten() {
+                            let name = entry.file_name().to_string_lossy().into_owned();
+                            if name.starts_with('.') {
+                                continue;
+                            }
+                            if entry.path().is_dir() {
+                                dirs.push(name);
+                            } else if name.ends_with(".ron") {
+                                files.push(name);
+                            }
+                        }
+                        fd.error = None;
+                    }
+                    Err(e) => fd.error = Some(format!("cannot read directory: {e}")),
+                }
+                dirs.sort();
+                files.sort();
+
+                egui::ScrollArea::vertical()
+                    .max_height(280.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for d in &dirs {
+                            if ui
+                                .selectable_label(false, format!("\u{1f4c1} {d}"))
+                                .clicked()
+                            {
+                                fd.dir.push(d);
+                            }
+                        }
+                        for f in &files {
+                            let resp =
+                                ui.selectable_label(fd.filename == *f, format!("\u{1f4c4} {f}"));
+                            if resp.clicked() {
+                                fd.filename = f.clone();
+                            }
+                            if resp.double_clicked() {
+                                fd.filename = f.clone();
+                                confirm = true;
+                            }
+                        }
+                    });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("File:");
+                    let r = ui.text_edit_singleline(&mut fd.filename);
+                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        confirm = true;
+                    }
+                    let label = match fd.mode {
+                        FileMode::Open => "Open",
+                        FileMode::Save => "Save",
+                    };
+                    if ui.button(label).clicked() {
+                        confirm = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        keep = false;
+                    }
+                });
+                if let Some(e) = &fd.error {
+                    ui.colored_label(col::OFFSET, e);
+                }
+            });
+
+        if confirm && !fd.filename.trim().is_empty() {
+            let mut name = fd.filename.trim().to_string();
+            if !name.ends_with(".ron") {
+                name.push_str(".ron");
+            }
+            let path = fd.dir.join(&name).to_string_lossy().into_owned();
+            match fd.mode {
+                FileMode::Open => actions.push(Action::Load(path)),
+                FileMode::Save => actions.push(Action::Save(path)),
+            }
+            keep = false;
+        }
+        if window_open && keep {
+            self.file_dialog = Some(fd);
+        }
+    }
     fn menu_bar(&mut self, root_ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         egui::Panel::top("menu").show(root_ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Path:");
-                        ui.text_edit_singleline(&mut self.save_path);
+                    if ui.button("Open project…").clicked() {
+                        self.open_file_dialog(FileMode::Open);
+                        ui.close();
+                    }
+                    ui.menu_button("Open recent", |ui| {
+                        if self.recent.is_empty() {
+                            ui.label("(none)");
+                        }
+                        for p in self.recent.clone() {
+                            if ui.button(&p).clicked() {
+                                actions.push(Action::Load(p));
+                                ui.close();
+                            }
+                        }
                     });
-                    if ui.button("Save project").clicked() {
+                    ui.separator();
+                    let has_path = !self.save_path.trim().is_empty();
+                    if ui
+                        .add_enabled(has_path, egui::Button::new("Save"))
+                        .clicked()
+                    {
                         actions.push(Action::Save(self.save_path.clone()));
                         ui.close();
                     }
-                    if ui.button("Load project").clicked() {
-                        actions.push(Action::Load(self.save_path.clone()));
+                    if ui.button("Save as…").clicked() {
+                        self.open_file_dialog(FileMode::Save);
                         ui.close();
                     }
                 });

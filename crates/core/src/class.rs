@@ -462,10 +462,10 @@ impl ClassRegistry {
             }
             if let Some(class) = self.classes.get(&cur) {
                 for n in &class.nodes {
-                    if let Some(c) = inline_class(&n.kind) {
-                        if !seen.contains(&c) {
-                            seen.push(c);
-                        }
+                    if let Some(c) = inline_class(&n.kind)
+                        && !seen.contains(&c)
+                    {
+                        seen.push(c);
                     }
                 }
             }

@@ -654,10 +654,8 @@ fn format_kind(
                 path: path.clone(),
                 readable,
             });
-            if expanded {
-                if let Some(&child_fi) = frame.children.get(&path) {
-                    format_class(frames, child_fi, *class_id, 0, depth + 1, path, ctx, out);
-                }
+            if expanded && let Some(&child_fi) = frame.children.get(&path) {
+                format_class(frames, child_fi, *class_id, 0, depth + 1, path, ctx, out);
             }
         }
         NodeKind::Pointer => {

@@ -3492,6 +3492,8 @@ dependencies = [
  "ratatui",
  "reclass-backend-vmem",
  "reclass-core",
+ "ron",
+ "serde",
 ]
 
 [[package]]

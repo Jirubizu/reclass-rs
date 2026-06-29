@@ -20,7 +20,6 @@ mod col {
     pub const VALUE: Color32 = Color32::from_rgb(0xE0, 0xA5, 0x4A); // orange
     pub const HEX: Color32 = Color32::from_rgb(0x9C, 0x9C, 0x9C); // gray
     pub const COMMENT: Color32 = Color32::from_rgb(0x6F, 0xC2, 0x76); // green
-    pub const FLASH: Color32 = Color32::from_rgb(0xFF, 0x40, 0x40); // value-changed highlight (red)
 }
 
 // Fixed column widths (px) so the virtualized table aligns like a monospace grid.
@@ -121,17 +120,100 @@ fn save_recent(recent: &[String]) {
     let _ = std::fs::write(recent_file(), recent.join("\n"));
 }
 
+fn settings_file() -> std::path::PathBuf {
+    config_dir().join("settings.ron")
+}
+
+/// User configuration, persisted to `~/.config/reclass-rs/settings.ron`.
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct Settings {
+    /// Whether value-change highlighting is on at all.
+    flash_enabled: bool,
+    /// Value-change highlight color (sRGB).
+    flash_color: [u8; 3],
+    /// Highlight fade duration, in seconds.
+    flash_secs: f32,
+    /// Default node type for newly-seeded fields (e.g. Hex64 vs Int64).
+    default_kind: NodeKind,
+    /// Number of `default_kind` rows a fresh class is seeded with.
+    seed_rows: usize,
+    /// Max array elements rendered per array node (render/perf cap).
+    array_cap: usize,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            flash_enabled: true,
+            flash_color: [0xFF, 0x40, 0x40],
+            flash_secs: 0.6,
+            default_kind: NodeKind::Hex(IntWidth::W64),
+            seed_rows: 16,
+            array_cap: 256,
+        }
+    }
+}
+
+impl Settings {
+    fn flash_color(&self) -> egui::Color32 {
+        let [r, g, b] = self.flash_color;
+        egui::Color32::from_rgb(r, g, b)
+    }
+
+    /// Load from disk, falling back to defaults on any error (missing/corrupt).
+    fn load() -> Self {
+        std::fs::read_to_string(settings_file())
+            .ok()
+            .and_then(|s| ron::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// Persist to disk (best-effort; errors ignored).
+    fn save(&self) {
+        let _ = std::fs::create_dir_all(config_dir());
+        if let Ok(s) = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default()) {
+            let _ = std::fs::write(settings_file(), s);
+        }
+    }
+}
+
+/// Seed `cid` with `rows` fields of `kind` so a fresh class shows memory at once.
+fn seed_class(state: &mut AppState, cid: ClassId, kind: &NodeKind, rows: usize) {
+    for i in 0..rows {
+        let _ = state.push_node(cid, Node::new(format!("field_{i}"), kind.clone()));
+    }
+}
+
 /// Tracks which rows' values just changed so the UI can flash them and fade the
 /// highlight out. Keyed by `(root, path)`; egui-independent (time is a plain
 /// monotonic `f64` in seconds) so it is unit-testable.
-#[derive(Default)]
 struct FlashTracker {
     map: std::collections::HashMap<(usize, Vec<PathSeg>), (String, f64)>,
+    /// Fade duration in seconds (configurable via Settings).
+    fade: f64,
+}
+
+impl Default for FlashTracker {
+    fn default() -> Self {
+        Self {
+            map: std::collections::HashMap::new(),
+            fade: Self::FADE,
+        }
+    }
 }
 
 impl FlashTracker {
-    /// Fade duration in seconds.
+    /// Default fade duration in seconds.
     const FADE: f64 = 0.6;
+
+    /// A tracker with a custom fade duration (seconds).
+    fn with_fade(fade: f64) -> Self {
+        Self {
+            fade,
+            ..Self::default()
+        }
+    }
 
     /// Reconcile against the current rows: rows whose signature changed since
     /// last frame get their timer reset (flash now); brand-new rows don't flash;
@@ -147,7 +229,7 @@ impl FlashTracker {
             let at = match self.map.remove(&key) {
                 Some((last, at)) if last == sig => at, // unchanged: keep fading
                 Some(_) => now,                        // changed: flash now
-                None => now - Self::FADE,              // first sight: no flash
+                None => now - self.fade,               // first sight: no flash
             };
             next.insert(key, (sig, at));
         }
@@ -159,8 +241,8 @@ impl FlashTracker {
         match self.map.get(&(root, path.to_vec())) {
             Some((_, at)) => {
                 let el = (now - at).max(0.0);
-                if el < Self::FADE {
-                    (1.0 - el / Self::FADE) as f32
+                if el < self.fade {
+                    (1.0 - el / self.fade) as f32
                 } else {
                     0.0
                 }
@@ -171,7 +253,7 @@ impl FlashTracker {
 
     /// Whether any row is still mid-fade (so the UI keeps repainting).
     fn any_active(&self, now: f64) -> bool {
-        self.map.values().any(|(_, at)| now - at < Self::FADE)
+        self.map.values().any(|(_, at)| now - at < self.fade)
     }
 }
 
@@ -242,20 +324,19 @@ struct ReClassApp {
     now: f64,
     recent: Vec<String>,
     file_dialog: Option<FileDialog>,
+    settings: Settings,
+    show_settings: bool,
 }
 
 impl ReClassApp {
     fn new(initial_pid: Option<i32>, initial_addr: Option<String>) -> Self {
+        let settings = Settings::load();
         let mut state = AppState::new();
-        // seed the starter class with some Hex64 rows so the table shows memory
-        // immediately on attach (ReClass-style); more can be added/changed live.
+        state.engine.set_array_limit(settings.array_cap);
+        // seed the starter class with the configured default type so the table
+        // shows memory immediately on attach (ReClass-style).
         let c1 = state.add_class("Class1");
-        for i in 0..16 {
-            let _ = state.push_node(
-                c1,
-                Node::new(format!("field_{:X}", i * 8), NodeKind::Hex(IntWidth::W64)),
-            );
-        }
+        seed_class(&mut state, c1, &settings.default_kind, settings.seed_rows);
         if let Some(addr) = initial_addr {
             let _ = state.set_address_expr(c1, addr);
         }
@@ -281,11 +362,13 @@ impl ReClassApp {
             selected_classes: std::collections::HashSet::new(),
             class_anchor: None,
             renaming_class: None,
-            flash: FlashTracker::default(),
+            flash: FlashTracker::with_fade(settings.flash_secs as f64),
             app_start: std::time::Instant::now(),
             now: 0.0,
             recent: load_recent(),
             file_dialog: None,
+            settings,
+            show_settings: false,
         };
         if let Some(pid) = initial_pid {
             app.apply(Action::AttachPid(pid));
@@ -316,7 +399,13 @@ impl ReClassApp {
                 } else {
                     std::mem::take(&mut self.new_class_name)
                 };
-                self.state.add_class(name);
+                let cid = self.state.add_class(name);
+                seed_class(
+                    &mut self.state,
+                    cid,
+                    &self.settings.default_kind,
+                    self.settings.seed_rows,
+                );
             }
             Action::OpenView(cid) => self.state.open_view(cid),
             Action::CloseView(i) => {
@@ -508,6 +597,7 @@ impl eframe::App for ReClassApp {
         let rows = self.state.compute_rows();
         // value-change flash tracking (fades over FlashTracker::FADE seconds)
         self.now = self.app_start.elapsed().as_secs_f64();
+        self.flash.fade = self.settings.flash_secs as f64;
         self.flash.update(
             rows.iter().map(|r| {
                 (
@@ -531,6 +621,7 @@ impl eframe::App for ReClassApp {
         self.memory_map_window(&ctx);
         self.codegen_window(&ctx);
         self.file_dialog_window(&ctx, &mut actions);
+        self.settings_window(&ctx);
 
         for a in actions {
             self.apply(a);
@@ -730,6 +821,8 @@ impl ReClassApp {
                     ui.checkbox(&mut self.show_side_panel, "Classes panel");
                     ui.checkbox(&mut self.show_memory_map, "Memory map");
                     ui.checkbox(&mut self.show_codegen, "Code generation");
+                    ui.separator();
+                    ui.checkbox(&mut self.show_settings, "Settings");
                 });
                 ui.separator();
                 ui.label("Refresh Hz:");
@@ -1135,9 +1228,14 @@ impl ReClassApp {
     ) {
         let row = visible[idx];
         // fade a highlight into the value/bytes when they just changed
-        let flash = self.flash.factor(row.root, &row.path, self.now);
-        let value_color = mix(col::FLASH, col::VALUE, flash);
-        let bytes_color = mix(col::FLASH, col::HEX, flash);
+        let flash = if self.settings.flash_enabled {
+            self.flash.factor(row.root, &row.path, self.now)
+        } else {
+            0.0
+        };
+        let flash_col = self.settings.flash_color();
+        let value_color = mix(flash_col, col::VALUE, flash);
+        let bytes_color = mix(flash_col, col::HEX, flash);
         ui.horizontal(|ui| {
             ui.set_height(row_h);
             // offset cell doubles as the row selector
@@ -1547,6 +1645,96 @@ impl ReClassApp {
         self.show_memory_map = open;
     }
 
+    fn settings_window(&mut self, ctx: &egui::Context) {
+        if !self.show_settings {
+            return;
+        }
+        let mut open = self.show_settings;
+        let mut changed = false;
+        egui::Window::new("Settings")
+            .open(&mut open)
+            .resizable(false)
+            .show(ctx, |ui| {
+                egui::Grid::new("settings_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("Value-change highlight");
+                        ui.horizontal(|ui| {
+                            changed |= ui
+                                .checkbox(&mut self.settings.flash_enabled, "enabled")
+                                .changed();
+                            ui.add_enabled_ui(self.settings.flash_enabled, |ui| {
+                                changed |= ui
+                                    .color_edit_button_srgb(&mut self.settings.flash_color)
+                                    .changed();
+                            });
+                        });
+                        ui.end_row();
+
+                        ui.label("Fade duration");
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut self.settings.flash_secs)
+                                    .range(0.1..=5.0)
+                                    .speed(0.05)
+                                    .suffix(" s"),
+                            )
+                            .changed();
+                        ui.end_row();
+
+                        ui.label("Default field type");
+                        let cur = scalar_kinds()
+                            .into_iter()
+                            .find(|(_, k)| *k == self.settings.default_kind)
+                            .map(|(l, _)| l)
+                            .unwrap_or("(custom)");
+                        egui::ComboBox::from_id_salt("default_kind")
+                            .selected_text(cur)
+                            .show_ui(ui, |ui| {
+                                for (label, kind) in scalar_kinds() {
+                                    changed |= ui
+                                        .selectable_value(
+                                            &mut self.settings.default_kind,
+                                            kind,
+                                            label,
+                                        )
+                                        .changed();
+                                }
+                            });
+                        ui.end_row();
+
+                        ui.label("Seed rows (new class)");
+                        changed |= ui
+                            .add(egui::DragValue::new(&mut self.settings.seed_rows).range(0..=256))
+                            .changed();
+                        ui.end_row();
+
+                        ui.label("Max array elements");
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut self.settings.array_cap).range(16..=8192),
+                            )
+                            .changed();
+                        ui.end_row();
+                    });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Reset to defaults").clicked() {
+                        self.settings = Settings::default();
+                        changed = true;
+                    }
+                    ui.weak(format!("saved to {}", settings_file().display()));
+                });
+                ui.weak("Type / seed rows apply to newly created classes.");
+            });
+        self.show_settings = open;
+        if changed {
+            self.state.engine.set_array_limit(self.settings.array_cap);
+            self.settings.save();
+        }
+    }
+
     fn codegen_window(&mut self, ctx: &egui::Context) {
         if !self.show_codegen {
             return;
@@ -1739,5 +1927,55 @@ mod tests {
         // row gone -> entry dropped
         f.update(std::iter::empty(), 5.0);
         assert_eq!(f.factor(0, &p, 5.0), 0.0);
+    }
+
+    #[test]
+    fn settings_roundtrip_and_defaults() {
+        // full round-trip preserves every field
+        let s = Settings {
+            flash_enabled: false,
+            flash_color: [1, 2, 3],
+            flash_secs: 1.25,
+            default_kind: NodeKind::Int(IntWidth::W64),
+            seed_rows: 4,
+            array_cap: 512,
+        };
+        let ron = ron::ser::to_string_pretty(&s, ron::ser::PrettyConfig::default()).unwrap();
+        let back: Settings = ron::from_str(&ron).unwrap();
+        assert!(s == back);
+
+        // #[serde(default)] fills missing fields from Default
+        let partial: Settings = ron::from_str("(flash_secs: 2.0)").unwrap();
+        assert_eq!(partial.flash_secs, 2.0);
+        assert_eq!(partial.default_kind, NodeKind::Hex(IntWidth::W64));
+        assert_eq!(partial.array_cap, 256);
+        assert!(partial.flash_enabled);
+    }
+
+    #[test]
+    fn seed_class_uses_default_kind() {
+        let mut state = AppState::new();
+        let c = state.add_class("C");
+        seed_class(&mut state, c, &NodeKind::Int(IntWidth::W32), 5);
+        let class = state.project.registry.get(c).unwrap();
+        assert_eq!(class.nodes.len(), 5);
+        assert!(
+            class
+                .nodes
+                .iter()
+                .all(|n| n.kind == NodeKind::Int(IntWidth::W32))
+        );
+    }
+
+    #[test]
+    fn flash_tracker_custom_fade() {
+        let mut f = FlashTracker::with_fade(2.0);
+        let p = vec![PathSeg::Node(0)];
+        f.update(std::iter::once((0usize, p.as_slice(), "a".into())), 0.0);
+        f.update(std::iter::once((0usize, p.as_slice(), "b".into())), 10.0);
+        // half-way through the 2s fade
+        assert!((f.factor(0, &p, 11.0) - 0.5).abs() < 0.02);
+        assert!(f.any_active(11.5));
+        assert!(!f.any_active(12.1));
     }
 }

@@ -27,6 +27,7 @@ You define a *class* as an ordered list of typed *fields*; reclass-rs resolves a
   - **value-change flash** that fades out so live changes are easy to spot;
   - inline editing of values, names, and comments with write-back to the target.
 - **Process picker**, **memory-map view**, and **project save/load** (RON) that remembers the attached process name and **auto-attaches** on load.
+- **Settings** window (*View → Settings*) persisted to `~/.config/reclass-rs/settings.ron`: value-change highlight color + fade + on/off, the default field type (e.g. `Hex64` → `Int64`) and seed-row count for new classes, and the max array elements rendered.
 - **Code generation** to C, C++, and Rust (`#[repr(C, packed)]`), with offsets as comments — generated Rust's `size_of`/`offset_of` match the model (verified by a test).
 - **Optional ptrace access tracker** (`access-tracker` feature): "what instruction wrote/accessed this address" via x86-64 hardware breakpoints.
 

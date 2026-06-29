@@ -108,15 +108,16 @@ impl Tui {
             term.draw(|f| self.draw(f, &rows))?;
 
             if event::poll(Duration::from_millis(100))?
-                && let Event::Key(key) = event::read()? {
-                    if key.kind != KeyEventKind::Press {
-                        continue;
-                    }
-                    self.handle_key(key.code, &rows);
-                    if self.quit {
-                        return Ok(());
-                    }
+                && let Event::Key(key) = event::read()?
+            {
+                if key.kind != KeyEventKind::Press {
+                    continue;
                 }
+                self.handle_key(key.code, &rows);
+                if self.quit {
+                    return Ok(());
+                }
+            }
             // periodic region refresh (every 2s)
             if last.elapsed() > Duration::from_secs(2) {
                 self.state.refresh_regions();
@@ -161,16 +162,18 @@ impl Tui {
             }
             KeyCode::Char(' ') | KeyCode::Enter => {
                 if let Some(row) = rows.get(self.selected)
-                    && row.expandable {
-                        self.state.toggle_expand(row.root, row.path.clone());
-                    }
+                    && row.expandable
+                {
+                    self.state.toggle_expand(row.root, row.path.clone());
+                }
             }
             KeyCode::Char('e') => {
                 if let Some(row) = rows.get(self.selected)
-                    && row.kind.is_editable() {
-                        self.buffer = String::new();
-                        self.input = Input::Value;
-                    }
+                    && row.kind.is_editable()
+                {
+                    self.buffer = String::new();
+                    self.input = Input::Value;
+                }
             }
             KeyCode::Char('a') => {
                 if let Some(cid) = self.state.selected_class() {

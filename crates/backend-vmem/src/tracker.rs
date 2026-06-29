@@ -171,7 +171,7 @@ pub fn watch(
 }
 
 /// Clear DR7 (disarm) and detach. SAFETY: see [`watch`].
-unsafe fn cleanup(pid: i32, dbg: usize) {
+fn cleanup(pid: i32, dbg: usize) {
     ptrace(libc::PTRACE_POKEUSER, pid, dbg + 7 * 8, 0);
     ptrace(libc::PTRACE_DETACH, pid, 0, 0);
 }

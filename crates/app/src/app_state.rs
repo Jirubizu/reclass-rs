@@ -503,9 +503,10 @@ impl AppState {
         kind: NodeKind,
     ) -> Result<(), String> {
         if let NodeKind::ClassInstance { class_id } = &kind
-            && self.project.registry.would_cycle(class, *class_id) {
-                return Err("would create an inline class cycle".to_string());
-            }
+            && self.project.registry.would_cycle(class, *class_id)
+        {
+            return Err("would create an inline class cycle".to_string());
+        }
         self.project
             .registry
             .set_kind(class, idx, kind)

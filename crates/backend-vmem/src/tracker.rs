@@ -50,8 +50,8 @@ fn errno() -> i32 {
 
 /// SAFETY: thin wrapper over the variadic `ptrace`. All pointer arguments are
 /// either null or valid for the duration of the call.
-unsafe fn ptrace(req: libc::c_uint, pid: libc::pid_t, addr: usize, data: usize) -> libc::c_long {
-    libc::ptrace(req, pid, addr as *mut c_void, data as *mut c_void)
+fn ptrace(req: libc::c_uint, pid: libc::pid_t, addr: usize, data: usize) -> libc::c_long {
+    unsafe { libc::ptrace(req, pid, addr as *mut c_void, data as *mut c_void) }
 }
 
 /// Watch `addr` (`size` bytes) for `access` on `pid` for up to `duration`,

@@ -58,3 +58,52 @@ jobs:
       - name: bench compile-check
         working-directory: reclass-rs
         run: cargo bench -p reclass-core --bench engine --no-run
+
+  release-build:
+    name: release build (GUI binary)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - name: Checkout reclass-rs
+        uses: actions/checkout@v4
+        with:
+          path: reclass-rs
+
+      - name: Checkout vmem (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: Jirubizu/vmem
+          path: vmem
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system deps (eframe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libfontconfig-dev
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            reclass-rs/target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('reclass-rs/Cargo.lock') }}
+
+      - name: Build release binary
+        working-directory: reclass-rs
+        run: cargo build --release --package reclass
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: reclass-linux-x86_64
+          path: reclass-rs/target/release/reclass

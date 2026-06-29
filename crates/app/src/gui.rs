@@ -223,6 +223,7 @@ struct ReClassApp {
     pid_input: String,
     new_class_name: String,
     save_path: String,
+    show_side_panel: bool,
     show_memory_map: bool,
     show_codegen: bool,
     codegen_lang: Language,
@@ -266,6 +267,7 @@ impl ReClassApp {
             pid_input: String::new(),
             new_class_name: String::new(),
             save_path: "project.ron".to_string(),
+            show_side_panel: true,
             show_memory_map: false,
             show_codegen: false,
             codegen_lang: Language::Rust,
@@ -522,7 +524,9 @@ impl eframe::App for ReClassApp {
 
         let mut actions: Vec<Action> = Vec::new();
         self.menu_bar(ui, &mut actions);
-        self.side_panel(ui, &mut actions);
+        if self.show_side_panel {
+            self.side_panel(ui, &mut actions);
+        }
         self.central(ui, &rows, &mut actions);
         self.memory_map_window(&ctx);
         self.codegen_window(&ctx);
@@ -723,6 +727,7 @@ impl ReClassApp {
                     }
                 });
                 ui.menu_button("View", |ui| {
+                    ui.checkbox(&mut self.show_side_panel, "Classes panel");
                     ui.checkbox(&mut self.show_memory_map, "Memory map");
                     ui.checkbox(&mut self.show_codegen, "Code generation");
                 });

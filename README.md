@@ -23,7 +23,7 @@ You define a *class* as an ordered list of typed *fields*; reclass-rs resolves a
   - left-click a type to change it; right-click a row to rename / delete / insert / *add bytes to a pointer's target*;
   - multi-select rows (Click / Ctrl / Shift) + `Delete`; same for the class list;
   - bulk **Add bytes** and an **Array builder** (`element × count`);
-  - **Expand all / Collapse all**;
+  - **Expand all / Collapse all**, and a **View** menu to hide the Classes panel and focus on memory;
   - **value-change flash** that fades out so live changes are easy to spot;
   - inline editing of values, names, and comments with write-back to the target.
 - **Process picker**, **memory-map view**, and **project save/load** (RON) that remembers the attached process name and **auto-attaches** on load.

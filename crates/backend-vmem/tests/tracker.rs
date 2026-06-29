@@ -6,8 +6,8 @@ use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use reclass_backend_vmem::tracker::{watch, Access, TrackError};
 use reclass_backend_vmem::VmemBackend;
+use reclass_backend_vmem::tracker::{Access, TrackError, watch};
 use reclass_core::MemoryBackend;
 
 #[test]

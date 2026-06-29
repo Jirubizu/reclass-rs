@@ -5,7 +5,7 @@
 use std::process::Command;
 
 use reclass_core::class::ClassRegistry;
-use reclass_core::codegen::{generate, Language};
+use reclass_core::codegen::{Language, generate};
 use reclass_core::node::{IntWidth, Node, NodeKind, TextEncoding};
 
 fn build_registry() -> (ClassRegistry, u32) {

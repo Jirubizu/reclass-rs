@@ -41,11 +41,7 @@ fn sanitize(name: &str, fallback: impl Fn() -> String) -> String {
             out.push('_');
         }
     }
-    if out.is_empty() {
-        fallback()
-    } else {
-        out
-    }
+    if out.is_empty() { fallback() } else { out }
 }
 
 fn class_type_name(reg: &ClassRegistry, id: ClassId) -> String {

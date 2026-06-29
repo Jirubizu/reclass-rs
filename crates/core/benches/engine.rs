@@ -1,7 +1,7 @@
 //! Engine benchmarks. Proves the render loop batches reads (one scatter per
 //! pointer-chain level) and stays allocation-light across ticks.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use reclass_core::backend::MockBackend;
 use reclass_core::class::ClassRegistry;
 use reclass_core::engine::{Engine, ExpandState, PathSeg, Root};

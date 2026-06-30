@@ -31,12 +31,22 @@ mod w {
 }
 
 /// Run the native egui application.
-pub fn run(initial_pid: Option<i32>, initial_addr: Option<String>) -> anyhow::Result<()> {
+pub fn run(
+    initial_pid: Option<i32>,
+    initial_addr: Option<String>,
+    initial_project: Option<String>,
+) -> anyhow::Result<()> {
     let options = eframe::NativeOptions::default();
     eframe::run_native(
         "reclass-rs",
         options,
-        Box::new(move |_cc| Ok(Box::new(ReClassApp::new(initial_pid, initial_addr)))),
+        Box::new(move |_cc| {
+            Ok(Box::new(ReClassApp::new(
+                initial_pid,
+                initial_addr,
+                initial_project,
+            )))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))
 }
@@ -329,7 +339,11 @@ struct ReClassApp {
 }
 
 impl ReClassApp {
-    fn new(initial_pid: Option<i32>, initial_addr: Option<String>) -> Self {
+    fn new(
+        initial_pid: Option<i32>,
+        initial_addr: Option<String>,
+        initial_project: Option<String>,
+    ) -> Self {
         let settings = Settings::load();
         let mut state = AppState::new();
         state.engine.set_array_limit(settings.array_cap);
@@ -372,6 +386,9 @@ impl ReClassApp {
         };
         if let Some(pid) = initial_pid {
             app.apply(Action::AttachPid(pid));
+        }
+        if let Some(path) = initial_project {
+            app.apply(Action::Load(path));
         }
         app
     }

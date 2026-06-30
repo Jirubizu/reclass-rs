@@ -42,7 +42,7 @@ struct Tui {
 }
 
 /// Run the terminal UI, optionally attaching to `pid` first.
-pub fn run(pid: Option<i32>, addr: Option<String>) -> anyhow::Result<()> {
+pub fn run(pid: Option<i32>, addr: Option<String>, project: Option<String>) -> anyhow::Result<()> {
     let mut state = AppState::new();
     let c1 = state.add_class("Class1");
     for i in 0..16 {
@@ -61,6 +61,12 @@ pub fn run(pid: Option<i32>, addr: Option<String>) -> anyhow::Result<()> {
                 state.status = format!("attached pid {pid}");
             }
             Err(e) => state.status = format!("attach failed: {e}"),
+        }
+    }
+    if let Some(path) = project {
+        match state.load(&path) {
+            Ok(()) => state.status = format!("loaded {path}"),
+            Err(e) => state.status = format!("load failed: {e}"),
         }
     }
 

@@ -1,0 +1,108 @@
+(
+    registry: (
+        classes: {
+            0: (
+                id: 0,
+                name: "Player",
+                nodes: [
+                    (
+                        name: "health",
+                        comment: "",
+                        kind: Int(W32),
+                    ),
+                    (
+                        name: "max_health",
+                        comment: "",
+                        kind: Int(W32),
+                    ),
+                    (
+                        name: "position",
+                        comment: "",
+                        kind: Vec3,
+                    ),
+                    (
+                        name: "flags",
+                        comment: "",
+                        kind: Hex(W32),
+                    ),
+                    (
+                        name: "alive",
+                        comment: "",
+                        kind: Bool,
+                    ),
+                    (
+                        name: "_pad0",
+                        comment: "",
+                        kind: Padding(3),
+                    ),
+                    (
+                        name: "name",
+                        comment: "",
+                        kind: Text(
+                            encoding: Utf8,
+                            len: 24,
+                        ),
+                    ),
+                    (
+                        name: "_pad1",
+                        comment: "",
+                        kind: Padding(4),
+                    ),
+                    (
+                        name: "weapon",
+                        comment: "",
+                        kind: ClassPtr(
+                            class_id: 1,
+                        ),
+                    ),
+                    (
+                        name: "score",
+                        comment: "",
+                        kind: UInt(W64),
+                    ),
+                ],
+                address_expr: "0x404080",
+            ),
+            1: (
+                id: 1,
+                name: "Weapon",
+                nodes: [
+                    (
+                        name: "damage",
+                        comment: "",
+                        kind: Int(W32),
+                    ),
+                    (
+                        name: "ammo",
+                        comment: "",
+                        kind: Int(W32),
+                    ),
+                    (
+                        name: "name",
+                        comment: "",
+                        kind: Text(
+                            encoding: Utf8,
+                            len: 16,
+                        ),
+                    ),
+                ],
+                address_expr: "",
+            ),
+        },
+        next_id: 2,
+    ),
+    views: [
+        (
+            class_id: 0,
+        ),
+        (
+            class_id: 1,
+        ),
+    ],
+    window: (
+        refresh_hz: 15,
+        width: 1100.0,
+        height: 720.0,
+    ),
+    attach_name: None,
+)

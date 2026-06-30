@@ -31,6 +31,12 @@ You define a *class* as an ordered list of typed *fields*; reclass-rs resolves a
 - **Code generation** to C, C++, and Rust (`#[repr(C, packed)]`), with offsets as comments — generated Rust's `size_of`/`offset_of` match the model (verified by a test).
 - **Optional ptrace access tracker** (`access-tracker` feature): "what instruction wrote/accessed this address" via x86-64 hardware breakpoints.
 
+## Try it — the playground
+
+A self-contained C target with a live-mutating `Player` struct (and a `Weapon` it points to) lives under [`examples/playground`](examples/playground/), with a full **[guided tour](examples/playground/README.md)**. Build it, attach, and rebuild the struct live — no game, no anti-cheat, default ptrace settings:
+
+![reclass-rs inspecting the playground](examples/playground/img/typed.png)
+
 ---
 
 ## Architecture
@@ -101,6 +107,7 @@ cargo run --release -p reclass -- --tui --pid 1234
 # CLI flags
 #   --pid <N>        attach to pid N
 #   --addr <expr>    seed the starter class's address bar (e.g. 0x5A3518 or "[<game>+0x10]")
+#   --project <ron>  load a saved project at launch (classes + expressions)
 #   --tui            use the terminal front-end
 ```
 

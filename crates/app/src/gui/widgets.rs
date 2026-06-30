@@ -8,9 +8,8 @@ use crate::app_state::AppState;
 
 /// Seed `cid` with `rows` fields of `kind` so a fresh class shows memory at once.
 pub(super) fn seed_class(state: &mut AppState, cid: ClassId, kind: &NodeKind, rows: usize) {
-    for i in 0..rows {
-        let _ = state.push_node(cid, Node::new(format!("field_{i}"), kind.clone()));
-    }
+    let nodes = (0..rows).map(|i| Node::new(format!("field_{i}"), kind.clone()));
+    let _ = state.project.registry.push_nodes(cid, nodes);
 }
 
 /// A fixed-width, monospace, colored label cell (non-editable columns).

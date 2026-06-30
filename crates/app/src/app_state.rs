@@ -8,6 +8,7 @@ use reclass_core::{
     AddrExpr, AddrInfo, ClassId, Engine, ExpandState, IntWidth, MemError, MemoryBackend, Node,
     NodeKind, PathSeg, Root, Row,
 };
+use std::collections::HashMap;
 
 /// Resolves an address to a `module+offset` / region label for pointer display.
 pub struct AddrResolver<'a> {
@@ -116,6 +117,10 @@ pub struct AppState {
     pub view_status: Vec<ViewStatus>,
     /// Human-readable status line.
     pub status: String,
+    /// Parsed address expressions, keyed by class id. A stored entry is reused
+    /// only while its source string still matches the class's `address_expr`,
+    /// so editing the expression transparently re-parses.
+    expr_cache: HashMap<ClassId, (String, Result<AddrExpr, String>)>,
 }
 
 impl Default for AppState {
@@ -136,6 +141,7 @@ impl AppState {
             selected_view: 0,
             view_status: Vec::new(),
             status: "detached".to_string(),
+            expr_cache: HashMap::new(),
         }
     }
 
@@ -192,9 +198,7 @@ impl AppState {
             if self.selected_view >= self.project.views.len() {
                 self.selected_view = self.project.views.len().saturating_sub(1);
             }
-            // expansion is keyed by root index == view index; rebuild to avoid
-            // stale keys pointing at the wrong view.
-            self.expand = ExpandState::new();
+            self.expand.drop_root(idx);
         }
     }
 
@@ -202,13 +206,16 @@ impl AppState {
     /// other classes become dangling (rendered as `class#id`); that's allowed.
     pub fn remove_class(&mut self, id: ClassId) {
         self.project.registry.remove_class(id);
-        self.project.views.retain(|v| v.class_id != id);
-        self.view_status.truncate(self.project.views.len());
-        if self.selected_view >= self.project.views.len() {
-            self.selected_view = self.project.views.len().saturating_sub(1);
+        self.expr_cache.remove(&id);
+        if let Some(idx) = self.project.views.iter().position(|v| v.class_id == id) {
+            self.project.views.remove(idx);
+            self.view_status.truncate(self.project.views.len());
+            if self.selected_view >= self.project.views.len() {
+                self.selected_view = self.project.views.len().saturating_sub(1);
+            }
+            // expansion is keyed by view position; shift higher views down.
+            self.expand.drop_root(idx);
         }
-        // view indices shifted; expansion is keyed by view index.
-        self.expand = ExpandState::new();
     }
 
     /// The class id of the selected view, if any.
@@ -227,18 +234,29 @@ impl AppState {
         let n = self.project.views.len();
         self.view_status.resize(n, ViewStatus::default());
 
+        // Snapshot (class_id, expr) first so resolution can take `&mut self` to
+        // populate the parsed-expression cache without aliasing the views.
+        let views: Vec<(ClassId, String)> = self
+            .project
+            .views
+            .iter()
+            .map(|v| {
+                let expr = self
+                    .project
+                    .registry
+                    .get(v.class_id)
+                    .map(|c| c.address_expr.clone())
+                    .unwrap_or_default();
+                (v.class_id, expr)
+            })
+            .collect();
+
         let mut roots = Vec::with_capacity(n);
-        for (i, view) in self.project.views.iter().enumerate() {
-            let expr = self
-                .project
-                .registry
-                .get(view.class_id)
-                .map(|c| c.address_expr.clone())
-                .unwrap_or_default();
-            let (base, error) = self.resolve_expr(&expr);
+        for (i, (class_id, expr)) in views.iter().enumerate() {
+            let (base, error) = self.resolve_cached(*class_id, expr);
             self.view_status[i] = ViewStatus { base, error };
             roots.push(Root {
-                class_id: view.class_id,
+                class_id: *class_id,
                 base,
             });
         }
@@ -258,17 +276,33 @@ impl AppState {
         )
     }
 
-    /// Resolve an address expression against the backend.
-    fn resolve_expr(&self, expr: &str) -> (u64, Option<String>) {
+    /// Resolve a class's address expression against the backend, caching the
+    /// parsed AST per class so only `eval` (which may deref live memory) runs
+    /// each tick; the parse happens once per expression edit.
+    fn resolve_cached(&mut self, class_id: ClassId, expr: &str) -> (u64, Option<String>) {
         if expr.trim().is_empty() {
+            self.expr_cache.remove(&class_id);
             return (0, None);
         }
+        let fresh =
+            matches!(self.expr_cache.get(&class_id), Some((src, _)) if src.as_str() == expr);
+        if !fresh {
+            let ast = AddrExpr::parse(expr).map_err(|e| e.to_string());
+            self.expr_cache.insert(class_id, (expr.to_string(), ast));
+        }
+        let parsed = match self.expr_cache.get(&class_id) {
+            Some((_, ast)) => ast.clone(),
+            None => return (0, None),
+        };
         let Some(backend) = &self.backend else {
             return (0, Some("not attached".to_string()));
         };
-        match AddrExpr::resolve(expr, backend.as_ref()) {
-            Ok(a) => (a, None),
-            Err(e) => (0, Some(e.to_string())),
+        match parsed {
+            Ok(ast) => match ast.eval(backend.as_ref()) {
+                Ok(a) => (a, None),
+                Err(e) => (0, Some(e.to_string())),
+            },
+            Err(e) => (0, Some(e)),
         }
     }
 
@@ -350,6 +384,9 @@ impl AppState {
         element: NodeKind,
         count: usize,
     ) -> Result<(), String> {
+        if self.project.registry.kind_would_cycle(class, &element) {
+            return Err("would create an inline class cycle".to_string());
+        }
         let off = self.project.registry.size_of(class);
         self.push_node(
             class,
@@ -376,13 +413,11 @@ impl AppState {
         let reg = &mut self.project.registry;
         let name = format!("Auto{}", reg.len());
         let target = reg.add_class(name);
-        for i in 0..16 {
-            reg.push_node(
-                target,
-                Node::new(format!("field_{:X}", i * 8), NodeKind::Hex(IntWidth::W64)),
-            )
-            .map_err(|e| e.to_string())?;
-        }
+        reg.push_nodes(
+            target,
+            (0..16).map(|i| Node::new(format!("field_{:X}", i * 8), NodeKind::Hex(IntWidth::W64))),
+        )
+        .map_err(|e| e.to_string())?;
         reg.set_kind(owner, idx, NodeKind::ClassPtr { class_id: target })
             .map_err(|e| e.to_string())?;
         self.expand.expand(root, path);
@@ -447,24 +482,28 @@ impl AppState {
     /// (e.g. 1024 bytes) instead of one field at a time.
     pub fn add_bytes(&mut self, class: ClassId, n: usize) -> Result<(), String> {
         let mut off = self.project.registry.size_of(class);
+        let mut nodes = Vec::with_capacity(n.div_ceil(8));
         let mut remaining = n;
         while remaining >= 8 {
-            self.push_node(
-                class,
-                Node::new(format!("field_{off:X}"), NodeKind::Hex(IntWidth::W64)),
-            )?;
+            nodes.push(Node::new(
+                format!("field_{off:X}"),
+                NodeKind::Hex(IntWidth::W64),
+            ));
             off += 8;
             remaining -= 8;
         }
         while remaining > 0 {
-            self.push_node(
-                class,
-                Node::new(format!("field_{off:X}"), NodeKind::Hex(IntWidth::W8)),
-            )?;
+            nodes.push(Node::new(
+                format!("field_{off:X}"),
+                NodeKind::Hex(IntWidth::W8),
+            ));
             off += 1;
             remaining -= 1;
         }
-        Ok(())
+        self.project
+            .registry
+            .push_nodes(class, nodes)
+            .map_err(|e| e.to_string())
     }
 
     /// Insert a node after `idx` in `class`.
@@ -502,9 +541,7 @@ impl AppState {
         idx: usize,
         kind: NodeKind,
     ) -> Result<(), String> {
-        if let NodeKind::ClassInstance { class_id } = &kind
-            && self.project.registry.would_cycle(class, *class_id)
-        {
+        if self.project.registry.kind_would_cycle(class, &kind) {
             return Err("would create an inline class cycle".to_string());
         }
         self.project
@@ -582,6 +619,7 @@ impl AppState {
         self.expand = ExpandState::new();
         self.selected_view = 0;
         self.view_status = vec![ViewStatus::default(); self.project.views.len()];
+        self.expr_cache.clear();
         Ok(())
     }
 }
@@ -893,5 +931,39 @@ mod tests {
         assert_eq!(st.project.views.len(), 1);
         assert_eq!(st.selected_class(), Some(b));
         let _ = a;
+    }
+
+    #[test]
+    fn add_array_rejects_inline_cycle() {
+        let mut st = AppState::new();
+        let a = st.add_class("A");
+        // array of inline-A inside A would recurse forever — must be refused
+        assert!(
+            st.add_array(a, NodeKind::ClassInstance { class_id: a }, 4)
+                .is_err()
+        );
+        // a ClassPtr element is a read boundary and is allowed
+        assert!(
+            st.add_array(a, NodeKind::ClassPtr { class_id: a }, 4)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn expr_cache_reparses_after_edit() {
+        let mut st = AppState::new();
+        let m = MockBackend::new();
+        m.put_module("game", 0x4000);
+        st.set_backend(Box::new(m));
+        let c = st.add_class("C");
+        st.push_node(c, Node::new("f", NodeKind::Hex(IntWidth::W64)))
+            .unwrap();
+        let _ = st.set_address_expr(c, "<game> + 0x10".to_string());
+        let _ = st.compute_rows();
+        assert_eq!(st.view_status[0].base, 0x4010);
+        // editing the expression must discard the cached AST and re-parse
+        let _ = st.set_address_expr(c, "<game> + 0x20".to_string());
+        let _ = st.compute_rows();
+        assert_eq!(st.view_status[0].base, 0x4020);
     }
 }

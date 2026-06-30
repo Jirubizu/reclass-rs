@@ -15,6 +15,7 @@
 //! pooled and reused across ticks to keep the hot path allocation-light.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use crate::backend::{MemoryBackend, ScatterReq};
 use crate::class::{ClassId, ClassRegistry};
@@ -100,6 +101,24 @@ impl ExpandState {
     pub fn clear_root(&mut self, root: usize) {
         self.set.retain(|(r, _)| *r != root);
         self.collapsed.retain(|(r, _)| *r != root);
+    }
+
+    /// Drop every entry for view `idx` and shift higher view indices down by
+    /// one, keeping expansion/collapse state aligned after a view is closed
+    /// (state is keyed by view position).
+    pub fn drop_root(&mut self, idx: usize) {
+        fn shift(set: &mut std::collections::HashSet<(usize, Vec<PathSeg>)>, idx: usize) {
+            *set = std::mem::take(set)
+                .into_iter()
+                .filter_map(|(r, p)| match r.cmp(&idx) {
+                    std::cmp::Ordering::Less => Some((r, p)),
+                    std::cmp::Ordering::Equal => None,
+                    std::cmp::Ordering::Greater => Some((r - 1, p)),
+                })
+                .collect();
+        }
+        shift(&mut self.set, idx);
+        shift(&mut self.collapsed, idx);
     }
 }
 
@@ -396,16 +415,16 @@ fn read_partial(backend: &dyn MemoryBackend, base: u64, buf: &mut [u8]) -> usize
 /// Issue one `read_scatter` filling the buffers of the listed frames. Returns
 /// whether the batched read succeeded.
 fn scatter_into(backend: &dyn MemoryBackend, frames: &mut [Frame], to_read: &[usize]) -> bool {
-    // Gather disjoint &mut to the selected frames' buffers.
-    // `to_read` indices are distinct, so we can collect mutable refs safely by
-    // walking the slice once and matching indices.
+    // Gather disjoint &mut to the selected frames' buffers. `to_read` is built
+    // in wave order and is therefore strictly ascending, so a single cursor
+    // over it avoids allocating a per-level membership set.
+    debug_assert!(to_read.windows(2).all(|w| w[0] < w[1]));
     let mut bufs: Vec<(u64, &mut [u8])> = Vec::with_capacity(to_read.len());
-    // Build a set for membership testing.
-    let want: std::collections::HashSet<usize> = to_read.iter().copied().collect();
+    let mut next = to_read.iter().copied().peekable();
     for (i, f) in frames.iter_mut().enumerate() {
-        if want.contains(&i) {
-            let addr = f.base;
-            bufs.push((addr, f.buf.as_mut_slice()));
+        if next.peek() == Some(&i) {
+            next.next();
+            bufs.push((f.base, f.buf.as_mut_slice()));
         }
     }
     let mut reqs: Vec<ScatterReq<'_>> = bufs
@@ -449,9 +468,10 @@ fn discover_class(
     let Some(class) = ctx.reg.get(class_id) else {
         return;
     };
-    let offsets = ctx.reg.offsets(class_id);
+    let mut local_off = 0usize;
     for (i, node) in class.nodes.iter().enumerate() {
-        let node_off = buf_off + offsets.get(i).copied().unwrap_or(0);
+        let node_off = buf_off + local_off;
+        local_off += node.kind.size(ctx.reg);
         let mut p = base_path.clone();
         p.push(PathSeg::Node(i));
         discover_kind(frame, ctx, fi, &node.kind, node_off, p, out);
@@ -511,10 +531,11 @@ fn format_class(
     let Some(class) = ctx.reg.get(class_id) else {
         return;
     };
-    let offsets = ctx.reg.offsets(class_id);
+    let mut local_off = 0usize;
     for (i, node) in class.nodes.iter().enumerate() {
-        let local_off = offsets.get(i).copied().unwrap_or(0);
         let node_off = buf_off + local_off;
+        let cur_off = local_off;
+        local_off += node.kind.size(ctx.reg);
         let mut p = base_path.clone();
         p.push(PathSeg::Node(i));
         format_kind(
@@ -522,7 +543,7 @@ fn format_class(
             fi,
             &node.kind,
             node_off,
-            local_off,
+            cur_off,
             depth,
             p,
             &node.name,
@@ -727,7 +748,7 @@ fn hex_preview(slice: Option<&[u8]>) -> String {
                 if i > 0 {
                     s.push(' ');
                 }
-                s.push_str(&format!("{b:02X}"));
+                let _ = write!(s, "{b:02X}");
             }
             s
         }
@@ -737,7 +758,7 @@ fn hex_preview(slice: Option<&[u8]>) -> String {
 
 fn read_u64(buf: &[u8], off: usize) -> Option<u64> {
     buf.get(off..off + 8)
-        .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+        .map(|b| u64::from_le_bytes(b.try_into().expect("slice is exactly 8 bytes")))
 }
 
 #[cfg(all(test, feature = "mock"))]
@@ -1044,5 +1065,23 @@ mod tests {
         assert!(rows[..3].iter().all(|r| r.readable));
         assert_eq!(rows[3].value, "???");
         assert!(!rows[3].readable);
+    }
+
+    #[test]
+    fn drop_root_shifts_higher_views() {
+        let mut e = ExpandState::new();
+        let p = vec![PathSeg::Node(0)];
+        e.expand(0, p.clone());
+        e.expand(2, p.clone());
+        e.mark_collapsed(2, vec![PathSeg::Node(1)]);
+        // close view 1: view 0 stays, view 2 shifts down to view 1
+        e.drop_root(1);
+        assert!(e.is_expanded(0, &p));
+        assert!(e.is_expanded(1, &p)); // shifted 2 -> 1
+        assert!(e.is_collapsed(1, &[PathSeg::Node(1)]));
+        assert!(!e.is_expanded(2, &p)); // old index gone
+        // close view 0: the remaining entry shifts down to 0
+        e.drop_root(0);
+        assert!(e.is_expanded(0, &p));
     }
 }

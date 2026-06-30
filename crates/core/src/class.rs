@@ -59,6 +59,14 @@ pub enum RegistryError {
         /// Number of nodes.
         len: usize,
     },
+    /// A node was expected to be an `Array` but had a different kind.
+    #[error("node index {idx} in class #{class} is not an array")]
+    NotAnArray {
+        /// Class id.
+        class: ClassId,
+        /// Node index.
+        idx: usize,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -170,6 +178,22 @@ impl ClassRegistry {
         Ok(())
     }
 
+    /// Append several nodes at once, invalidating the cache a single time.
+    /// Cheaper than repeated [`push_node`](Self::push_node) for bulk growth.
+    pub fn push_nodes(
+        &mut self,
+        class: ClassId,
+        nodes: impl IntoIterator<Item = Node>,
+    ) -> Result<(), RegistryError> {
+        let c = self
+            .classes
+            .get_mut(&class)
+            .ok_or(RegistryError::NotFound(class))?;
+        c.nodes.extend(nodes);
+        self.invalidate();
+        Ok(())
+    }
+
     /// Insert a node at `idx` (shifts following offsets).
     pub fn insert_node(
         &mut self,
@@ -253,7 +277,7 @@ impl ClassRegistry {
             self.invalidate();
             Ok(())
         } else {
-            Err(RegistryError::NodeOutOfBounds { class, idx, len })
+            Err(RegistryError::NotAnArray { class, idx })
         }
     }
 
@@ -332,40 +356,49 @@ impl ClassRegistry {
     /// inline `ClassInstance` cycle contributes 0 where it re-enters.
     pub fn size_of(&self, id: ClassId) -> usize {
         let mut stack = Vec::new();
-        self.size_of_inner(id, &mut stack)
+        self.size_of_checked(id, &mut stack).0
     }
 
-    fn size_of_inner(&self, id: ClassId, stack: &mut Vec<ClassId>) -> usize {
+    /// Returns `(size, complete)`. `complete` is `false` when an inline cycle
+    /// was truncated anywhere in this subtree; incomplete results are **never
+    /// cached**, so a later query entering from a different class recomputes
+    /// instead of reading a context-dependent (entry-order-poisoned) value.
+    fn size_of_checked(&self, id: ClassId, stack: &mut Vec<ClassId>) -> (usize, bool) {
         if stack.contains(&id) {
-            return 0; // inline cycle: this re-entry contributes nothing
+            return (0, false); // inline cycle: this re-entry contributes nothing
         }
         if let Some(&s) = self.cache.borrow().sizes.get(&id) {
-            return s;
+            return (s, true);
         }
-        let total = match self.classes.get(&id) {
+        let (total, complete) = match self.classes.get(&id) {
             Some(class) => {
                 stack.push(id);
-                let t = class
-                    .nodes
-                    .iter()
-                    .map(|n| self.node_size_inner(&n.kind, stack))
-                    .sum();
+                let mut total = 0usize;
+                let mut complete = true;
+                for n in &class.nodes {
+                    let (s, c) = self.node_size_checked(&n.kind, stack);
+                    total += s;
+                    complete &= c;
+                }
                 stack.pop();
-                t
+                (total, complete)
             }
-            None => 0,
+            None => (0, true),
         };
-        self.cache.borrow_mut().sizes.insert(id, total);
-        total
+        if complete {
+            self.cache.borrow_mut().sizes.insert(id, total);
+        }
+        (total, complete)
     }
 
-    fn node_size_inner(&self, kind: &NodeKind, stack: &mut Vec<ClassId>) -> usize {
+    fn node_size_checked(&self, kind: &NodeKind, stack: &mut Vec<ClassId>) -> (usize, bool) {
         match kind {
-            NodeKind::ClassInstance { class_id } => self.size_of_inner(*class_id, stack),
+            NodeKind::ClassInstance { class_id } => self.size_of_checked(*class_id, stack),
             NodeKind::Array { element, count } => {
-                self.node_size_inner(element, stack).saturating_mul(*count)
+                let (s, c) = self.node_size_checked(element, stack);
+                (s.saturating_mul(*count), c)
             }
-            other => other.fixed_size(),
+            other => (other.fixed_size(), true),
         }
     }
 
@@ -374,20 +407,26 @@ impl ClassRegistry {
         if let Some(o) = self.cache.borrow().offsets.get(&id) {
             return o.clone();
         }
-        let offs = match self.classes.get(&id) {
+        let (offs, complete) = match self.classes.get(&id) {
             Some(class) => {
                 let mut offs = Vec::with_capacity(class.nodes.len());
                 let mut acc = 0usize;
+                let mut complete = true;
                 for n in &class.nodes {
                     offs.push(acc);
                     let mut stack = vec![id];
-                    acc += self.node_size_inner(&n.kind, &mut stack);
+                    let (s, c) = self.node_size_checked(&n.kind, &mut stack);
+                    acc += s;
+                    complete &= c;
                 }
-                offs
+                (offs, complete)
             }
-            None => Vec::new(),
+            None => (Vec::new(), true),
         };
-        self.cache.borrow_mut().offsets.insert(id, offs.clone());
+        // Only memoize a fully-resolved offset table (see `size_of_checked`).
+        if complete {
+            self.cache.borrow_mut().offsets.insert(id, offs.clone());
+        }
         offs
     }
 
@@ -471,6 +510,16 @@ impl ClassRegistry {
             }
         }
         false
+    }
+
+    /// Whether inserting `kind` into `parent` would create an inline cycle.
+    /// Kinds that don't inline a class (everything but `ClassInstance` and
+    /// arrays of one) can never cycle, so this returns `false` for them.
+    pub fn kind_would_cycle(&self, parent: ClassId, kind: &NodeKind) -> bool {
+        match inline_class(kind) {
+            Some(child) => self.would_cycle(parent, child),
+            None => false,
+        }
     }
 }
 
@@ -676,5 +725,59 @@ mod tests {
             Err(RegistryError::NodeOutOfBounds { .. })
         ));
         assert_eq!(reg.set_kind(99, 0, h32()), Err(RegistryError::NotFound(99)));
+    }
+
+    #[test]
+    fn set_array_count_on_non_array_errors() {
+        let mut reg = ClassRegistry::new();
+        let c = reg.add_class("C");
+        reg.push_node(c, Node::new("a", h32())).unwrap();
+        assert_eq!(
+            reg.set_array_count(c, 0, 4),
+            Err(RegistryError::NotAnArray { class: c, idx: 0 })
+        );
+    }
+
+    #[test]
+    fn kind_would_cycle_catches_array_of_self() {
+        let mut reg = ClassRegistry::new();
+        let a = reg.add_class("A");
+        // a direct inline instance of A inside A cycles
+        assert!(reg.kind_would_cycle(a, &NodeKind::ClassInstance { class_id: a }));
+        // so does an array of inline-A (the latent gap the old guard missed)
+        let arr = NodeKind::Array {
+            element: Box::new(NodeKind::ClassInstance { class_id: a }),
+            count: 2,
+        };
+        assert!(reg.kind_would_cycle(a, &arr));
+        // a ClassPtr is a read boundary, never an inline cycle
+        assert!(!reg.kind_would_cycle(a, &NodeKind::ClassPtr { class_id: a }));
+    }
+
+    #[test]
+    fn cyclic_inline_size_is_entry_order_independent() {
+        // Build a mutual inline cycle A<->B directly on the registry (past the
+        // UI guards). size_of must terminate and be independent of which class
+        // is queried first — i.e. an incomplete (cycle-truncated) result is
+        // never memoized.
+        let build = || {
+            let mut reg = ClassRegistry::new();
+            let a = reg.add_class("A");
+            let b = reg.add_class("B");
+            reg.push_node(a, Node::new("toB", NodeKind::ClassInstance { class_id: b }))
+                .unwrap();
+            reg.push_node(a, Node::new("tail", h32())).unwrap();
+            reg.push_node(b, Node::new("toA", NodeKind::ClassInstance { class_id: a }))
+                .unwrap();
+            reg.push_node(b, Node::new("tail", h32())).unwrap();
+            (reg, a, b)
+        };
+        let (r1, a1, b1) = build();
+        let _ = r1.size_of(a1); // enter from A first
+        let b_via_a = r1.size_of(b1);
+        let (r2, _a2, b2) = build();
+        let b_first = r2.size_of(b2); // enter from B first
+        assert_eq!(b_via_a, b_first);
+        assert!(r1.validate().is_err());
     }
 }

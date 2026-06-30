@@ -122,10 +122,15 @@ pub fn watch(
         });
 
         let mut hits = Vec::new();
+        // Signal to re-inject on the next PTRACE_CONT (0 = none). Debug traps are
+        // consumed (they are ours); any other signal the tracee receives is
+        // forwarded so we don't silently alter its behaviour.
+        let mut deliver: usize = 0;
         loop {
-            if ptrace(libc::PTRACE_CONT, pid, 0, 0) < 0 {
+            if ptrace(libc::PTRACE_CONT, pid, 0, deliver) < 0 {
                 break;
             }
+            deliver = 0;
             let mut status: libc::c_int = 0;
             if libc::waitpid(pid, &mut status, 0) < 0 {
                 break;
@@ -157,6 +162,9 @@ pub fn watch(
                 } else if sig == libc::SIGSTOP {
                     // our watchdog (or an external stop): stop tracking
                     break;
+                } else {
+                    // a real signal destined for the tracee: forward it
+                    deliver = sig as usize;
                 }
             }
             if Instant::now() >= deadline {

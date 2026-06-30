@@ -6,6 +6,7 @@
 //! input back into bytes for write-back.
 
 use crate::class::{ClassId, ClassRegistry};
+use std::fmt::Write as _;
 
 /// Width of an integer / hex node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -456,11 +457,10 @@ impl NodeKind {
 
 fn fmt_float(f: f64) -> String {
     if f == 0.0 {
+        // normalize -0.0 to "0"
         "0".to_string()
-    } else if f.is_finite() {
-        // shortest round-trip representation
-        format!("{f}")
     } else {
+        // Display is the shortest round-trip representation (incl. inf/NaN).
         format!("{f}")
     }
 }
@@ -493,12 +493,12 @@ fn format_text(bytes: &[u8], encoding: TextEncoding) -> String {
 }
 
 fn hex_dump(bytes: &[u8], max: usize) -> String {
-    let mut s = String::new();
+    let mut s = String::with_capacity(max.min(bytes.len()) * 3);
     for (i, b) in bytes.iter().take(max).enumerate() {
         if i > 0 {
             s.push(' ');
         }
-        s.push_str(&format!("{b:02X}"));
+        let _ = write!(s, "{b:02X}");
     }
     if bytes.len() > max {
         s.push_str(" …");

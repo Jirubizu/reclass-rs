@@ -69,6 +69,7 @@ impl AddrExpr {
         let mut p = Parser {
             src: input.as_bytes(),
             pos: 0,
+            depth: 0,
         };
         let e = p.expr()?;
         p.skip_ws();
@@ -118,9 +119,13 @@ impl AddrExpr {
 struct Parser<'a> {
     src: &'a [u8],
     pos: usize,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
+    /// Hard cap on bracket/paren nesting; bounds recursion on adversarial input.
+    const MAX_DEPTH: usize = 64;
+
     fn err(&self, msg: &str) -> ExprError {
         ExprError::Parse {
             msg: msg.to_string(),
@@ -148,6 +153,10 @@ impl<'a> Parser<'a> {
     }
 
     fn expr(&mut self) -> Result<AddrExpr, ExprError> {
+        self.depth += 1;
+        if self.depth > Self::MAX_DEPTH {
+            return Err(self.err("expression nested too deep"));
+        }
         let mut left = self.term()?;
         loop {
             match self.peek() {
@@ -164,6 +173,7 @@ impl<'a> Parser<'a> {
                 _ => break,
             }
         }
+        self.depth -= 1;
         Ok(left)
     }
 
@@ -335,5 +345,18 @@ mod tests {
             Err(ExprError::Parse { .. })
         ));
         assert!(matches!(AddrExpr::parse(""), Err(ExprError::Parse { .. })));
+    }
+
+    #[test]
+    fn deeply_nested_is_rejected() {
+        // Hundreds of '[' would overflow a naive recursive-descent parser; the
+        // depth cap turns it into a clean parse error well before that.
+        let deep = format!("{}0x1000{}", "[".repeat(200), "]".repeat(200));
+        assert!(matches!(
+            AddrExpr::parse(&deep),
+            Err(ExprError::Parse { .. })
+        ));
+        // reasonable nesting still parses
+        assert!(AddrExpr::parse("[[[0x10]]]").is_ok());
     }
 }

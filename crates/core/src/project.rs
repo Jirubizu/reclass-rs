@@ -6,7 +6,7 @@
 
 #[cfg(feature = "serde")]
 mod imp {
-    use crate::class::{ClassId, ClassRegistry};
+    use crate::class::{ClassId, ClassRegistry, RegistryError};
     use serde::{Deserialize, Serialize};
 
     /// One open class view (tab). The address expression itself lives on the
@@ -63,6 +63,10 @@ mod imp {
         /// I/O failed.
         #[error(transparent)]
         Io(#[from] std::io::Error),
+        /// The deserialized registry failed structural validation (e.g. an
+        /// inline `ClassInstance` cycle).
+        #[error("invalid project: {0}")]
+        Invalid(#[from] RegistryError),
     }
 
     impl Project {
@@ -74,7 +78,9 @@ mod imp {
 
         /// Parse from a RON string.
         pub fn from_ron(s: &str) -> Result<Self, ProjectError> {
-            ron::from_str(s).map_err(|e| ProjectError::Ron(e.to_string()))
+            let project: Self = ron::from_str(s).map_err(|e| ProjectError::Ron(e.to_string()))?;
+            project.registry.validate()?;
+            Ok(project)
         }
 
         /// Save to a file (RON).
@@ -181,5 +187,27 @@ mod tests {
         let back = Project::load(&path).unwrap();
         assert_eq!(back.to_ron().unwrap(), p.to_ron().unwrap());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_rejects_inline_cycle() {
+        // The app guards against inline cycles at edit time, but a hand-edited
+        // or older file could still contain one; loading must refuse it.
+        let mut reg = ClassRegistry::new();
+        let a = reg.add_class("A");
+        let b = reg.add_class("B");
+        reg.push_node(a, Node::new("b", NodeKind::ClassInstance { class_id: b }))
+            .unwrap();
+        reg.push_node(b, Node::new("a", NodeKind::ClassInstance { class_id: a }))
+            .unwrap();
+        let p = Project {
+            registry: reg,
+            ..Default::default()
+        };
+        let ron = p.to_ron().unwrap();
+        assert!(matches!(
+            Project::from_ron(&ron),
+            Err(ProjectError::Invalid(_))
+        ));
     }
 }

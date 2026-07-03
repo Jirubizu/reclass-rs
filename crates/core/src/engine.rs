@@ -53,10 +53,12 @@ pub struct ExpandState {
 
 impl ExpandState {
     /// New, all collapsed.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
     /// Whether `path` under `root` is expanded.
+    #[must_use]
     pub fn is_expanded(&self, root: usize, path: &[PathSeg]) -> bool {
         self.set.contains(&(root, path.to_vec()))
     }
@@ -80,6 +82,7 @@ impl ExpandState {
 
     /// Whether an aggregate (`Array`/`ClassInstance`) at `path` is collapsed
     /// (they default to expanded).
+    #[must_use]
     pub fn is_collapsed(&self, root: usize, path: &[PathSeg]) -> bool {
         self.collapsed.contains(&(root, path.to_vec()))
     }
@@ -193,6 +196,7 @@ pub struct Engine {
 
 impl Engine {
     /// A fresh engine with a default array-expansion cap of 256 elements.
+    #[must_use]
     pub fn new() -> Self {
         Engine {
             buf_pool: Vec::new(),
@@ -208,6 +212,7 @@ impl Engine {
 
     /// Number of read levels (scatter calls on the happy path) the last
     /// [`snapshot`](Self::snapshot) issued.
+    #[must_use]
     pub fn last_read_levels(&self) -> usize {
         self.last_levels
     }
@@ -308,7 +313,7 @@ impl Engine {
                 frames[fi].class_id,
                 0,
                 0,
-                frames[fi].base_path.clone(),
+                &frames[fi].base_path,
                 &ctx,
                 &mut rows,
             );
@@ -335,7 +340,6 @@ impl Engine {
         // size each frame's buffer
         for &fi in wave {
             let sz = reg.size_of(frames[fi].class_id);
-            frames[fi].buf.clear();
             frames[fi].buf.resize(sz, 0);
         }
         // collect indices that actually need a read (non-empty)
@@ -445,15 +449,7 @@ fn contains_class_ref(kind: &NodeKind) -> bool {
 // -- discovery -------------------------------------------------------------
 
 fn discover_frame(frame: &Frame, ctx: &Ctx<'_>, fi: usize, out: &mut Vec<DiscSpec>) {
-    discover_class(
-        frame,
-        ctx,
-        fi,
-        frame.class_id,
-        0,
-        frame.base_path.clone(),
-        out,
-    );
+    discover_class(frame, ctx, fi, frame.class_id, 0, &frame.base_path, out);
 }
 
 fn discover_class(
@@ -462,7 +458,7 @@ fn discover_class(
     fi: usize,
     class_id: ClassId,
     buf_off: usize,
-    base_path: Vec<PathSeg>,
+    base_path: &[PathSeg],
     out: &mut Vec<DiscSpec>,
 ) {
     let Some(class) = ctx.reg.get(class_id) else {
@@ -472,7 +468,7 @@ fn discover_class(
     for (i, node) in class.nodes.iter().enumerate() {
         let node_off = buf_off + local_off;
         local_off += node.kind.size(ctx.reg);
-        let mut p = base_path.clone();
+        let mut p = base_path.to_vec();
         p.push(PathSeg::Node(i));
         discover_kind(frame, ctx, fi, &node.kind, node_off, p, out);
     }
@@ -489,7 +485,7 @@ fn discover_kind(
 ) {
     match kind {
         NodeKind::ClassInstance { class_id } if !ctx.expand.is_collapsed(frame.root, &path) => {
-            discover_class(frame, ctx, fi, *class_id, off, path, out);
+            discover_class(frame, ctx, fi, *class_id, off, &path, out);
         }
         NodeKind::Array { element, count }
             if contains_class_ref(element) && !ctx.expand.is_collapsed(frame.root, &path) =>
@@ -524,7 +520,7 @@ fn format_class(
     class_id: ClassId,
     buf_off: usize,
     depth: u32,
-    base_path: Vec<PathSeg>,
+    base_path: &[PathSeg],
     ctx: &Ctx<'_>,
     out: &mut Vec<Row>,
 ) {
@@ -536,7 +532,7 @@ fn format_class(
         let node_off = buf_off + local_off;
         let cur_off = local_off;
         local_off += node.kind.size(ctx.reg);
-        let mut p = base_path.clone();
+        let mut p = base_path.to_vec();
         p.push(PathSeg::Node(i));
         format_kind(
             frames,
@@ -553,7 +549,6 @@ fn format_class(
         );
     }
 }
-
 #[allow(clippy::too_many_arguments)]
 fn format_kind(
     frames: &[Frame],
@@ -594,7 +589,7 @@ fn format_kind(
                 readable,
             });
             if expanded {
-                format_class(frames, fi, *class_id, off, depth + 1, path, ctx, out);
+                format_class(frames, fi, *class_id, off, depth + 1, &path, ctx, out);
             }
         }
         NodeKind::Array { element, count } => {
@@ -676,7 +671,7 @@ fn format_kind(
                 readable,
             });
             if expanded && let Some(&child_fi) = frame.children.get(&path) {
-                format_class(frames, child_fi, *class_id, 0, depth + 1, path, ctx, out);
+                format_class(frames, child_fi, *class_id, 0, depth + 1, &path, ctx, out);
             }
         }
         NodeKind::Pointer => {

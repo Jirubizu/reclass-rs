@@ -33,7 +33,7 @@ impl AddrInfo for AddrResolver<'_> {
 struct Walk<'a> {
     reg: &'a reclass_core::ClassRegistry,
     follow_ptrs: bool,
-    visited: Vec<ClassId>,
+    visited: std::collections::HashSet<ClassId>,
     aggs: Vec<Vec<PathSeg>>,
     ptrs: Vec<Vec<PathSeg>>,
 }
@@ -56,18 +56,16 @@ impl Walk<'_> {
         match kind {
             NodeKind::ClassInstance { class_id } => {
                 self.aggs.push(path.clone());
-                if depth < Self::MAX_DEPTH && !self.visited.contains(class_id) {
-                    self.visited.push(*class_id);
+                if depth < Self::MAX_DEPTH && self.visited.insert(*class_id) {
                     self.class(*class_id, path, depth + 1);
-                    self.visited.pop();
+                    self.visited.remove(class_id);
                 }
             }
             NodeKind::ClassPtr { class_id } => {
                 self.ptrs.push(path.clone());
-                if self.follow_ptrs && depth < Self::MAX_DEPTH && !self.visited.contains(class_id) {
-                    self.visited.push(*class_id);
+                if self.follow_ptrs && depth < Self::MAX_DEPTH && self.visited.insert(*class_id) {
                     self.class(*class_id, path, depth + 1);
-                    self.visited.pop();
+                    self.visited.remove(class_id);
                 }
             }
             NodeKind::Array { element, count } => {
@@ -368,7 +366,7 @@ impl AppState {
         let mut w = Walk {
             reg: &self.project.registry,
             follow_ptrs,
-            visited: vec![class],
+            visited: std::collections::HashSet::from([class]),
             aggs: std::mem::take(aggs),
             ptrs: std::mem::take(ptrs),
         };

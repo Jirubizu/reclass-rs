@@ -25,6 +25,7 @@ pub enum IntWidth {
 impl IntWidth {
     /// Width in bytes.
     #[inline]
+    #[must_use]
     pub fn bytes(self) -> usize {
         match self {
             IntWidth::W8 => 1,
@@ -35,6 +36,7 @@ impl IntWidth {
     }
     /// Number of bits.
     #[inline]
+    #[must_use]
     pub fn bits(self) -> u32 {
         self.bytes() as u32 * 8
     }
@@ -192,7 +194,7 @@ pub enum EditErr {
 fn le_unsigned(bytes: &[u8]) -> u64 {
     let mut v = 0u64;
     for (i, &b) in bytes.iter().take(8).enumerate() {
-        v |= (b as u64) << (i * 8);
+        v |= u64::from(b) << (i * 8);
     }
     v
 }
@@ -228,7 +230,7 @@ fn int_to_le(value: i128, width: IntWidth, signed: bool) -> Result<Vec<u8>, Edit
     if signed {
         let bits = width.bits();
         let (min, max) = if bits == 64 {
-            (i64::MIN as i128, i64::MAX as i128)
+            (i128::from(i64::MIN), i128::from(i64::MAX))
         } else {
             let max = (1i128 << (bits - 1)) - 1;
             (-(1i128 << (bits - 1)), max)
@@ -239,7 +241,7 @@ fn int_to_le(value: i128, width: IntWidth, signed: bool) -> Result<Vec<u8>, Edit
     } else {
         let bits = width.bits();
         let max = if bits == 64 {
-            u64::MAX as i128
+            i128::from(u64::MAX)
         } else {
             (1i128 << bits) - 1
         };
@@ -291,6 +293,7 @@ impl NodeKind {
 
     /// Size of every non-recursive kind; `0` for `ClassInstance`/`Array` (use
     /// [`size`](Self::size) with a registry for those).
+    #[must_use]
     pub fn fixed_size(&self) -> usize {
         match self {
             NodeKind::Hex(w) | NodeKind::Int(w) | NodeKind::UInt(w) => w.bytes(),
@@ -329,14 +332,13 @@ impl NodeKind {
             },
             NodeKind::Pointer => "Ptr".into(),
             NodeKind::Array { element, count } => format!("{}[{count}]", element.label(reg)),
-            NodeKind::ClassInstance { class_id } => reg
-                .name_of(*class_id)
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| format!("class#{class_id}")),
+            NodeKind::ClassInstance { class_id } => reg.name_of(*class_id).map_or_else(
+                || format!("class#{class_id}"),
+                std::string::ToString::to_string,
+            ),
             NodeKind::ClassPtr { class_id } => reg
                 .name_of(*class_id)
-                .map(|n| format!("{n}*"))
-                .unwrap_or_else(|| format!("class#{class_id}*")),
+                .map_or_else(|| format!("class#{class_id}*"), |n| format!("{n}*")),
             NodeKind::FunctionPtr => "FnPtr".into(),
             NodeKind::Padding(n) => format!("Padding[{n}]"),
             NodeKind::Unknown(n) => format!("Unknown[{n}]"),
@@ -344,6 +346,7 @@ impl NodeKind {
     }
 
     /// Whether this kind holds a single editable scalar/value (vs an aggregate).
+    #[must_use]
     pub fn is_editable(&self) -> bool {
         !matches!(
             self,
@@ -356,6 +359,7 @@ impl NodeKind {
 
     /// Format a byte slice into a one-line display value. For aggregate kinds
     /// the result is a summary; per-element rows are produced by the engine.
+    #[must_use]
     pub fn format(&self, bytes: &[u8], ctx: &FmtCtx<'_>) -> String {
         match self {
             NodeKind::Hex(w) => {
@@ -364,7 +368,7 @@ impl NodeKind {
             }
             NodeKind::Int(w) => le_signed(bytes, *w).to_string(),
             NodeKind::UInt(w) => le_unsigned(&bytes[..w.bytes().min(bytes.len())]).to_string(),
-            NodeKind::Float32 => fmt_float(read_f32(bytes) as f64),
+            NodeKind::Float32 => fmt_float(f64::from(read_f32(bytes))),
             NodeKind::Float64 => fmt_float(read_f64(bytes)),
             NodeKind::Bool => if bytes.iter().any(|&b| b != 0) {
                 "true"
@@ -375,22 +379,22 @@ impl NodeKind {
             NodeKind::Vec2 => {
                 format!(
                     "({}, {})",
-                    fmt_float(read_f32(bytes) as f64),
-                    fmt_float(read_f32(&bytes[4..]) as f64)
+                    fmt_float(f64::from(read_f32(bytes))),
+                    fmt_float(f64::from(read_f32(&bytes[4..])))
                 )
             }
             NodeKind::Vec3 => format!(
                 "({}, {}, {})",
-                fmt_float(read_f32(bytes) as f64),
-                fmt_float(read_f32(&bytes[4..]) as f64),
-                fmt_float(read_f32(&bytes[8..]) as f64),
+                fmt_float(f64::from(read_f32(bytes))),
+                fmt_float(f64::from(read_f32(&bytes[4..]))),
+                fmt_float(f64::from(read_f32(&bytes[8..]))),
             ),
             NodeKind::Vec4 => format!(
                 "({}, {}, {}, {})",
-                fmt_float(read_f32(bytes) as f64),
-                fmt_float(read_f32(&bytes[4..]) as f64),
-                fmt_float(read_f32(&bytes[8..]) as f64),
-                fmt_float(read_f32(&bytes[12..]) as f64),
+                fmt_float(f64::from(read_f32(bytes))),
+                fmt_float(f64::from(read_f32(&bytes[4..]))),
+                fmt_float(f64::from(read_f32(&bytes[8..]))),
+                fmt_float(f64::from(read_f32(&bytes[12..]))),
             ),
             NodeKind::Text { encoding, .. } => format_text(bytes, *encoding),
             NodeKind::Pointer | NodeKind::FunctionPtr => {
@@ -399,18 +403,16 @@ impl NodeKind {
             }
             NodeKind::ClassPtr { class_id } => {
                 let target = le_unsigned(&bytes[..8.min(bytes.len())]);
-                let name = ctx
-                    .registry
-                    .name_of(*class_id)
-                    .map(|n| n.to_string())
-                    .unwrap_or_else(|| format!("class#{class_id}"));
+                let name = ctx.registry.name_of(*class_id).map_or_else(
+                    || format!("class#{class_id}"),
+                    std::string::ToString::to_string,
+                );
                 format!("-> {} {}", format_ptr(target, ctx), name)
             }
             NodeKind::ClassInstance { class_id } => ctx
                 .registry
                 .name_of(*class_id)
-                .map(|n| format!("<{n}>"))
-                .unwrap_or_else(|| format!("<class#{class_id}>")),
+                .map_or_else(|| format!("<class#{class_id}>"), |n| format!("<{n}>")),
             NodeKind::Array { element, count } => {
                 format!("{}[{count}]", element.label(ctx.registry))
             }

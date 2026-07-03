@@ -122,7 +122,7 @@ struct Parser<'a> {
     depth: usize,
 }
 
-impl<'a> Parser<'a> {
+impl Parser<'_> {
     /// Hard cap on bracket/paren nesting; bounds recursion on adversarial input.
     const MAX_DEPTH: usize = 64;
 
@@ -259,7 +259,8 @@ impl<'a> Parser<'a> {
                 pos: start,
             });
         }
-        let text = std::str::from_utf8(&self.src[digit_start..self.pos]).unwrap();
+        let text = std::str::from_utf8(&self.src[digit_start..self.pos])
+            .expect("digit bytes are always valid UTF-8");
         u64::from_str_radix(text, radix)
             .map(AddrExpr::Num)
             .map_err(|_| ExprError::Parse {

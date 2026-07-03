@@ -44,6 +44,7 @@ pub struct Perms {
 
 impl Perms {
     /// Parse the four `rwxp` characters from `/proc/<pid>/maps`.
+    #[must_use]
     pub fn parse(s: &str) -> Self {
         let b = s.as_bytes();
         Perms {
@@ -84,16 +85,19 @@ pub struct Region {
 impl Region {
     /// Length in bytes.
     #[inline]
+    #[must_use]
     pub fn len(&self) -> u64 {
         self.end.saturating_sub(self.start)
     }
     /// Whether the region is empty.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.start >= self.end
     }
     /// Whether `addr` falls within `[start, end)`.
     #[inline]
+    #[must_use]
     pub fn contains(&self, addr: u64) -> bool {
         addr >= self.start && addr < self.end
     }
@@ -167,7 +171,7 @@ impl<T: MemoryBackend + ?Sized> MemoryBackend for &T {
 
 #[cfg(feature = "mock")]
 mod mock {
-    use super::*;
+    use super::{MemError, MemoryBackend, Region, ScatterReq};
     use parking_lot::Mutex;
     use std::collections::BTreeMap;
 
@@ -192,6 +196,7 @@ mod mock {
 
     impl MockBackend {
         /// Empty backend.
+        #[must_use]
         pub fn new() -> Self {
             Self::default()
         }

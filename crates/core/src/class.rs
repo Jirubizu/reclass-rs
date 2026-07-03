@@ -87,6 +87,7 @@ pub struct ClassRegistry {
 
 impl ClassRegistry {
     /// An empty registry.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -445,8 +446,6 @@ impl ClassRegistry {
             Visiting,
             Done,
         }
-        let mut state: HashMap<ClassId, State> = HashMap::new();
-        let mut path: Vec<ClassId> = Vec::new();
 
         // Iterative-safe recursion via an explicit helper.
         fn dfs(
@@ -477,6 +476,9 @@ impl ClassRegistry {
             state.insert(id, State::Done);
             Ok(())
         }
+
+        let mut state: HashMap<ClassId, State> = HashMap::new();
+        let mut path: Vec<ClassId> = Vec::new();
 
         for &id in self.classes.keys() {
             dfs(self, id, &mut state, &mut path)?;

@@ -333,14 +333,23 @@ impl ReClassApp {
                             }
                         }
                     }
-                    ui.menu_button(
-                        egui::RichText::new(&row.type_label)
-                            .monospace()
-                            .color(col::TYPE),
-                        |ui| {
-                            self.type_change_menu(ui, view_class, row, actions);
-                        },
-                    );
+                    let type_resp = ui
+                        .menu_button(
+                            egui::RichText::new(&row.type_label)
+                                .monospace()
+                                .color(col::TYPE),
+                            |ui| {
+                                self.type_change_menu(ui, view_class, row, actions);
+                            },
+                        )
+                        .response;
+                    // Distinct popup id so right-click (context menu) and left-click
+                    // (type menu) don't share state and open together.
+                    egui::Popup::context_menu(&type_resp)
+                        .id(type_resp.id.with("row_ctx"))
+                        .show(|ui| {
+                            self.row_context_menu(ui, view_class, row, actions);
+                        });
                 },
             );
 
@@ -640,6 +649,19 @@ impl ReClassApp {
         };
         if let Some(tc) = target {
             ui.separator();
+            if ui.button("View as root").clicked() {
+                // Root the target class where this node currently lives: deref the
+                // pointer for ClassPtr, use the instance address for ClassInstance.
+                // ponytail: snapshots this node's address; re-invoke if the parent
+                // base moves.
+                let expr = match &row.kind {
+                    NodeKind::ClassPtr { .. } => format!("[0x{:X}]", row.address),
+                    _ => format!("0x{:X}", row.address),
+                };
+                actions.push(Action::SetExpr(tc, expr));
+                actions.push(Action::OpenView(tc));
+                ui.close();
+            }
             ui.menu_button("Add bytes to target", |ui| {
                 for n in [64usize, 256, 1024, 4096] {
                     if ui.button(format!("+{n}")).clicked() {

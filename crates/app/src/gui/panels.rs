@@ -427,6 +427,23 @@ impl ReClassApp {
                             )
                             .changed();
                         ui.end_row();
+
+                        ui.label("MCP control server");
+                        ui.horizontal(|ui| {
+                            changed |= ui
+                                .checkbox(&mut self.settings.mcp_enabled, "enabled")
+                                .changed();
+                            ui.add_enabled_ui(self.settings.mcp_enabled, |ui| {
+                                changed |= ui
+                                    .add(
+                                        egui::DragValue::new(&mut self.settings.mcp_port)
+                                            .range(1..=65535)
+                                            .prefix("port "),
+                                    )
+                                    .changed();
+                            });
+                        });
+                        ui.end_row();
                     });
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -437,6 +454,7 @@ impl ReClassApp {
                     ui.weak(format!("saved to {}", settings_file().display()));
                 });
                 ui.weak("Type / seed rows apply to newly created classes.");
+                ui.weak("MCP server binds to 127.0.0.1 (loopback only).");
             });
         self.show_settings = open;
         if changed {

@@ -64,6 +64,10 @@ pub(super) struct Settings {
     pub(super) seed_rows: usize,
     /// Max array elements rendered per array node (render/perf cap).
     pub(super) array_cap: usize,
+    /// Whether the in-process MCP control server runs.
+    pub(super) mcp_enabled: bool,
+    /// TCP port for the MCP server (bound to 127.0.0.1).
+    pub(super) mcp_port: u16,
 }
 
 impl Default for Settings {
@@ -75,6 +79,8 @@ impl Default for Settings {
             default_kind: NodeKind::Hex(IntWidth::W64),
             seed_rows: 16,
             array_cap: 256,
+            mcp_enabled: false,
+            mcp_port: 3900,
         }
     }
 }

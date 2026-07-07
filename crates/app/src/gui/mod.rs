@@ -174,6 +174,8 @@ struct ReClassApp {
     file_dialog: Option<FileDialog>,
     settings: Settings,
     show_settings: bool,
+    /// Running MCP server (in-process control surface), or `None` when off.
+    mcp: Option<crate::mcp::McpRuntime>,
 }
 
 impl ReClassApp {
@@ -221,6 +223,7 @@ impl ReClassApp {
             file_dialog: None,
             settings,
             show_settings: false,
+            mcp: None,
         };
         if let Some(pid) = initial_pid {
             app.apply(Action::AttachPid(pid));
@@ -475,6 +478,45 @@ impl ReClassApp {
         self.recent.truncate(MAX_RECENT);
         save_recent(&self.recent);
     }
+
+    /// Reconcile the running MCP server with settings: (re)start on enable or
+    /// port change, stop on disable. Cheap no-op when already in sync.
+    fn sync_mcp(&mut self, ctx: &egui::Context) {
+        let desired = self.settings.mcp_enabled.then_some(self.settings.mcp_port);
+        let current = self.mcp.as_ref().map(crate::mcp::McpRuntime::port);
+        if desired == current {
+            return;
+        }
+        if let Some(rt) = self.mcp.take() {
+            rt.stop();
+        }
+        if let Some(port) = desired {
+            let ctx = ctx.clone();
+            match crate::mcp::start(port, move || ctx.request_repaint()) {
+                Ok(rt) => {
+                    self.mcp = Some(rt);
+                    self.state.status = format!("MCP server on 127.0.0.1:{port}");
+                }
+                Err(e) => {
+                    self.error = Some(format!("MCP: {e}"));
+                    // avoid retrying every frame on a hard failure (e.g. port busy)
+                    self.settings.mcp_enabled = false;
+                    self.settings.save();
+                }
+            }
+        }
+    }
+
+    /// Apply every pending MCP request against live state, replying to each.
+    fn drain_mcp(&mut self) {
+        let Some(rt) = self.mcp.as_ref() else {
+            return;
+        };
+        while let Some(call) = rt.try_recv() {
+            let result = crate::mcp::dispatch(&mut self.state, &call.op);
+            let _ = call.reply.send(result);
+        }
+    }
 }
 
 impl eframe::App for ReClassApp {
@@ -482,6 +524,8 @@ impl eframe::App for ReClassApp {
         let hz = self.state.project.window.refresh_hz.max(1);
         let ctx = ui.ctx().clone();
         ctx.request_repaint_after(Duration::from_secs_f32(1.0 / hz as f32));
+        self.sync_mcp(&ctx);
+        self.drain_mcp();
 
         let rows = self.state.compute_rows();
         // value-change flash tracking (fades over FlashTracker::FADE seconds)
@@ -572,6 +616,8 @@ mod tests {
             default_kind: NodeKind::Int(IntWidth::W64),
             seed_rows: 4,
             array_cap: 512,
+            mcp_enabled: true,
+            mcp_port: 4001,
         };
         let ron = ron::ser::to_string_pretty(&s, ron::ser::PrettyConfig::default()).unwrap();
         let back: Settings = ron::from_str(&ron).unwrap();

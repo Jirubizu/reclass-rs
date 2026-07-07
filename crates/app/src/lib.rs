@@ -5,5 +5,6 @@
 pub mod app_state;
 #[cfg(feature = "gui")]
 pub mod gui;
+pub mod mcp;
 #[cfg(feature = "tui")]
 pub mod tui;

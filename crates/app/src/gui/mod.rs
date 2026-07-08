@@ -90,11 +90,13 @@ struct ClassRename {
     focused: bool,
 }
 
-/// Open vs Save for the in-app file browser.
+/// Modes for the in-app browser: pick a `.ron` file (Open/Save) or a directory
+/// to generate a `vmem` project into (GenProject).
 #[derive(Clone, Copy, PartialEq)]
 enum FileMode {
     Open,
     Save,
+    GenProject,
 }
 
 /// Minimal, dependency-free file browser state (egui-rendered).
@@ -143,6 +145,8 @@ enum Action {
     CollapseAll,
     Save(String),
     Load(String),
+    /// Generate a `vmem`-backed Cargo project into the given directory.
+    GenerateProject(String),
 }
 
 struct ReClassApp {
@@ -392,6 +396,13 @@ impl ReClassApp {
                     }
                 }
             }
+            Action::GenerateProject(dir) => match self.state.generate_project(&dir) {
+                Ok(n) => {
+                    self.state.status = format!("generated project ({n} files) in {dir}");
+                    self.error = None;
+                }
+                Err(e) => self.error = Some(format!("generate project: {e}")),
+            },
         }
     }
 
@@ -459,7 +470,7 @@ impl ReClassApp {
                 .file_name()
                 .map(|f| f.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "project.ron".to_string()),
-            FileMode::Open => String::new(),
+            FileMode::Open | FileMode::GenProject => String::new(),
         };
         self.file_dialog = Some(FileDialog {
             mode,

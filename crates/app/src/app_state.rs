@@ -2,7 +2,7 @@
 //! the render engine, and apply edits. Unit-tested against `MockBackend`.
 
 use reclass_core::backend::Region;
-use reclass_core::codegen::{Language, generate};
+use reclass_core::codegen::{Language, generate, generate_project};
 use reclass_core::project::{Project, View};
 use reclass_core::{
     AddrExpr, AddrInfo, ClassId, Engine, ExpandState, IntWidth, MemError, MemoryBackend, Node,
@@ -603,6 +603,33 @@ impl AppState {
     /// Generated source for the whole registry.
     pub fn codegen(&self, lang: Language) -> String {
         generate(&self.project.registry, lang)
+    }
+
+    /// Generate a standalone `vmem`-backed Cargo project mirroring the current
+    /// classes into `dir` (created if needed). Returns the number of files
+    /// written. The crate is named after `dir`'s final component.
+    pub fn generate_project(&self, dir: &str) -> Result<usize, String> {
+        use std::path::Path;
+        let root = Path::new(dir);
+        let crate_name = root
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "reclass_project".to_string());
+        let files = generate_project(
+            &self.project.registry,
+            &crate_name,
+            self.project.attach_name.as_deref(),
+        );
+        for (rel, contents) in &files {
+            let path = root.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("{}: {e}", parent.display()))?;
+            }
+            std::fs::write(&path, contents).map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+        Ok(files.len())
     }
 
     /// Save the project to a RON file.

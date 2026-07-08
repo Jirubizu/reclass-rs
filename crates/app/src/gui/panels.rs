@@ -17,6 +17,7 @@ impl ReClassApp {
         let title = match fd.mode {
             FileMode::Open => "Open project",
             FileMode::Save => "Save project as",
+            FileMode::GenProject => "Generate vmem project into…",
         };
         let mut window_open = true;
         let mut keep = true;
@@ -55,7 +56,7 @@ impl ReClassApp {
                             }
                             if entry.path().is_dir() {
                                 dirs.push(name);
-                            } else if name.ends_with(".ron") {
+                            } else if name.ends_with(".ron") && fd.mode != FileMode::GenProject {
                                 files.push(name);
                             }
                         }
@@ -92,20 +93,31 @@ impl ReClassApp {
                     });
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label("File:");
-                    let r = ui.text_edit_singleline(&mut fd.filename);
-                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        confirm = true;
-                    }
-                    let label = match fd.mode {
-                        FileMode::Open => "Open",
-                        FileMode::Save => "Save",
-                    };
-                    if ui.button(label).clicked() {
-                        confirm = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        keep = false;
+                    if fd.mode == FileMode::GenProject {
+                        if ui.button("Generate here").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            keep = false;
+                        }
+                        ui.weak("creates Cargo.toml + src/ here");
+                    } else {
+                        ui.label("File:");
+                        let r = ui.text_edit_singleline(&mut fd.filename);
+                        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            confirm = true;
+                        }
+                        let label = if fd.mode == FileMode::Open {
+                            "Open"
+                        } else {
+                            "Save"
+                        };
+                        if ui.button(label).clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            keep = false;
+                        }
                     }
                 });
                 if let Some(e) = &fd.error {
@@ -113,17 +125,28 @@ impl ReClassApp {
                 }
             });
 
-        if confirm && !fd.filename.trim().is_empty() {
-            let mut name = fd.filename.trim().to_string();
-            if !name.ends_with(".ron") {
-                name.push_str(".ron");
-            }
-            let path = fd.dir.join(&name).to_string_lossy().into_owned();
+        if confirm {
             match fd.mode {
-                FileMode::Open => actions.push(Action::Load(path)),
-                FileMode::Save => actions.push(Action::Save(path)),
+                FileMode::GenProject => {
+                    let dir = fd.dir.to_string_lossy().into_owned();
+                    actions.push(Action::GenerateProject(dir));
+                    keep = false;
+                }
+                FileMode::Open | FileMode::Save if !fd.filename.trim().is_empty() => {
+                    let mut name = fd.filename.trim().to_string();
+                    if !name.ends_with(".ron") {
+                        name.push_str(".ron");
+                    }
+                    let path = fd.dir.join(&name).to_string_lossy().into_owned();
+                    if fd.mode == FileMode::Open {
+                        actions.push(Action::Load(path));
+                    } else {
+                        actions.push(Action::Save(path));
+                    }
+                    keep = false;
+                }
+                _ => {}
             }
-            keep = false;
         }
         if window_open && keep {
             self.file_dialog = Some(fd);
@@ -160,6 +183,11 @@ impl ReClassApp {
                     }
                     if ui.button("Save as…").clicked() {
                         self.open_file_dialog(FileMode::Save);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Generate vmem project…").clicked() {
+                        self.open_file_dialog(FileMode::GenProject);
                         ui.close();
                     }
                 });

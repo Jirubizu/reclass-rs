@@ -88,3 +88,30 @@ jobs:
         with:
           name: reclass-linux-x86_64
           path: target/release/reclass
+  create-release:
+    name: create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [release-build]
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
+    steps:
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: reclass-linux-x86_64
+
+      - name: Generate changelog from push commits
+        run: |
+          echo '${{ toJson(github.event.commits) }}' |
+          jq -r '.[] | "* \(.message | split("\n")[0] | @text)"' > /tmp/changelog.md
+          { cat /tmp/changelog.md; echo; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous
+          name: Continuous build
+          body_path: /tmp/changelog.md
+          files: reclass
+          make_latest: true

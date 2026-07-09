@@ -15,7 +15,7 @@ env:
 jobs:
   build-test:
     name: fmt + clippy + test + bench-compile
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout
         uses: actions/checkout@v4

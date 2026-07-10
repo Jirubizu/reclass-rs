@@ -104,9 +104,8 @@ jobs:
       - name: Generate changelog from push commits
         run: |
           echo '${{ toJson(github.event.commits) }}' |
-          jq -r '.[] | "* \(.message | split("\n")[0] | @text)"' > /tmp/changelog.md
+          jq -r '.[] | select(.distinct) | "* " + (.message | split("\n") | .[0])' > /tmp/changelog.md
           { cat /tmp/changelog.md; echo; } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:

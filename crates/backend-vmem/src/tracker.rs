@@ -42,6 +42,15 @@ pub enum TrackError {
     /// Watch size must be 1, 2, 4, or 8 bytes.
     #[error("unsupported watch size {0} (must be 1, 2, 4, or 8)")]
     Size(usize),
+    /// Watch address must be aligned to the watch size (x86 debug-register
+    /// requirement); otherwise the CPU traps unpredictably or not at all.
+    #[error("watch address {addr:#x} is not aligned to size {size}")]
+    Align {
+        /// The misaligned address.
+        addr: u64,
+        /// The required alignment (== watch size).
+        size: usize,
+    },
 }
 
 fn errno() -> i32 {
@@ -55,9 +64,15 @@ fn ptrace(req: libc::c_uint, pid: libc::pid_t, addr: usize, data: usize) -> libc
 }
 
 /// Watch `addr` (`size` bytes) for `access` on `pid` for up to `duration`,
-/// stopping early after `max_hits`. Returns the captured instruction pointers.
+/// stopping early after `max_hits` (`0` = no limit; run until `duration`).
+/// Returns the captured instruction pointers.
 ///
 /// Requires ptrace rights over `pid` (same UID + `ptrace_scope <= 1`, or root).
+///
+/// # Errors
+/// [`TrackError::Size`] for a `size` other than 1/2/4/8, [`TrackError::Align`]
+/// if `addr` is not `size`-aligned, or [`TrackError::Ptrace`] if attach/arm
+/// fails (e.g. insufficient ptrace rights).
 pub fn watch(
     pid: i32,
     addr: u64,
@@ -73,6 +88,9 @@ pub fn watch(
         8 => 0b10,
         other => return Err(TrackError::Size(other)),
     };
+    if !addr.is_multiple_of(size as u64) {
+        return Err(TrackError::Align { addr, size });
+    }
     let rw_bits: u64 = match access {
         Access::Write => 0b01,
         Access::ReadWrite => 0b11,
@@ -113,28 +131,48 @@ pub fn watch(
             });
         }
 
-        // watchdog: unblock the final waitpid if the address stays quiet
+        // Deadline is enforced by this thread via a `WNOHANG` poll — no
+        // background watchdog, so we never signal a detached (possibly reused)
+        // pid and `max_hits` can exit early without blocking the full duration.
+        const POLL_INTERVAL: Duration = Duration::from_millis(1);
         let deadline = Instant::now() + duration;
-        let watchdog = std::thread::spawn(move || {
-            std::thread::sleep(duration);
-            // SAFETY: kill is always safe to call with a pid + signal.
-            libc::kill(pid, libc::SIGSTOP);
-        });
 
         let mut hits = Vec::new();
         // Signal to re-inject on the next PTRACE_CONT (0 = none). Debug traps are
         // consumed (they are ours); any other signal the tracee receives is
         // forwarded so we don't silently alter its behaviour.
         let mut deliver: usize = 0;
-        loop {
+        'run: loop {
             if ptrace(libc::PTRACE_CONT, pid, 0, deliver) < 0 {
                 break;
             }
             deliver = 0;
+
+            // Wait for the tracee to stop, polling so the deadline is honoured
+            // without a background thread. If it passes while the tracee is
+            // still running, stop it *while still attached* and reap the stop
+            // here, so cleanup detaches cleanly (SIGSTOP is never left dangling
+            // for a detached or reused pid).
             let mut status: libc::c_int = 0;
-            if libc::waitpid(pid, &mut status, 0) < 0 {
-                break;
+            loop {
+                let r = libc::waitpid(pid, &mut status, libc::WNOHANG);
+                if r < 0 {
+                    break 'run;
+                }
+                if r == pid {
+                    break;
+                }
+                // r == 0: still running.
+                if Instant::now() >= deadline {
+                    libc::kill(pid, libc::SIGSTOP);
+                    if libc::waitpid(pid, &mut status, 0) < 0 {
+                        break 'run;
+                    }
+                    break;
+                }
+                std::thread::sleep(POLL_INTERVAL);
             }
+
             if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
                 break;
             }
@@ -156,11 +194,12 @@ pub fn watch(
                         // clear DR6 status bits
                         ptrace(libc::PTRACE_POKEUSER, pid, dbg + 6 * 8, 0);
                     }
-                    if hits.len() >= max_hits {
+                    // max_hits == 0 means "no limit; run until the deadline".
+                    if max_hits > 0 && hits.len() >= max_hits {
                         break;
                     }
                 } else if sig == libc::SIGSTOP {
-                    // our watchdog (or an external stop): stop tracking
+                    // our deadline interrupt (or an external stop): stop tracking
                     break;
                 } else {
                     // a real signal destined for the tracee: forward it
@@ -173,7 +212,6 @@ pub fn watch(
         }
 
         cleanup(pid, dbg);
-        let _ = watchdog.join();
         Ok(hits)
     }
 }

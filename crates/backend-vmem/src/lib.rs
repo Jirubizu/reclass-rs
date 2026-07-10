@@ -51,6 +51,41 @@ pub fn process_name(pid: i32) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// The `/dev/vmem` char device path (kernel driver).
+const VMEM_DEVICE: &str = "/dev/vmem";
+
+/// Check whether the vmem kernel module is loaded and the device is usable.
+///
+/// Opens `/dev/vmem` read-write; drops the fd immediately.
+pub fn kernel_available() -> bool {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(VMEM_DEVICE)
+        .is_ok()
+}
+
+/// Select the vmem backend for this process.
+///
+/// Must be called once at startup, before any `VmemBackend` is created and
+/// while the process is still single-threaded. If `use_kernel` is true, sets
+/// `VMEM_BACKEND=kernel` (vmem probes `/dev/vmem` and falls back to syscalls
+/// if unavailable). If false, sets `VMEM_BACKEND=syscall` to force the
+/// userspace path regardless of whether the device exists.
+///
+/// # Safety
+/// Not thread-safe. Call exactly once before spawning threads or touching
+/// memory backends.
+pub unsafe fn select_backend(use_kernel: bool) {
+    if use_kernel {
+        // SAFETY: caller's contract (§Safety) guarantees single-threaded startup.
+        unsafe { std::env::set_var("VMEM_BACKEND", "kernel") };
+    } else {
+        // SAFETY: same contract.
+        unsafe { std::env::set_var("VMEM_BACKEND", "syscall") };
+    }
+}
+
 /// A live target process exposed as a [`MemoryBackend`].
 #[derive(Clone, Debug)]
 pub struct VmemBackend {

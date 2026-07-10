@@ -2,6 +2,7 @@
 //! windows (file browser, memory map, settings, code generation).
 
 use eframe::egui;
+use reclass_backend_vmem::{kernel_available, select_backend};
 use reclass_core::codegen::Language;
 
 use super::settings::{Settings, settings_file};
@@ -456,6 +457,21 @@ impl ReClassApp {
                             .changed();
                         ui.end_row();
 
+                        ui.label("Kernel backend (/dev/vmem)");
+                        let mut kernel_checked = self.settings.use_kernel;
+                        if ui
+                            .checkbox(&mut kernel_checked, "use kernel module")
+                            .changed()
+                        {
+                            if kernel_checked && !kernel_available() {
+                                self.show_kernel_unavailable = true;
+                            } else {
+                                self.settings.use_kernel = kernel_checked;
+                                changed = true;
+                            }
+                        }
+                        ui.end_row();
+
                         ui.label("MCP control server");
                         ui.horizontal(|ui| {
                             changed |= ui
@@ -487,6 +503,36 @@ impl ReClassApp {
         self.show_settings = open;
         if changed {
             self.state.engine.set_array_limit(self.settings.array_cap);
+            self.settings.save();
+        }
+    }
+
+    /// Modal: the vmem kernel module is not loaded/available.
+    pub(super) fn kernel_unavailable_window(&mut self, ctx: &egui::Context) {
+        if !self.show_kernel_unavailable {
+            return;
+        }
+        let mut open = true;
+        let mut clicked_ok = false;
+        egui::Window::new("Kernel module not available")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label("The vmem kernel module (/dev/vmem) could not be found.");
+                ui.label("Memory access will fall back to userspace syscalls.");
+                ui.add_space(8.0);
+                if ui.button("OK").clicked() {
+                    clicked_ok = true;
+                }
+            });
+        if !open || clicked_ok {
+            self.show_kernel_unavailable = false;
+            self.settings.use_kernel = false;
+            // Re-apply userspace backend; this is a no-op if already latched,
+            // but harmless and signals intent for the next restart.
+            // SAFETY: called from the GUI thread; env writes are benign here.
+            unsafe { select_backend(false) };
             self.settings.save();
         }
     }

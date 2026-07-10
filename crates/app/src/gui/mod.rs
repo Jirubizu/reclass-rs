@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use eframe::egui;
-use reclass_backend_vmem::{ProcInfo, VmemBackend, list_processes, process_name};
+use reclass_backend_vmem::{ProcInfo, VmemBackend, list_processes, process_name, select_backend};
 use reclass_core::codegen::Language;
 use reclass_core::{ClassId, Node, NodeKind, PathSeg};
 
@@ -52,6 +52,9 @@ pub fn run(
     initial_addr: Option<String>,
     initial_project: Option<String>,
 ) -> anyhow::Result<()> {
+    let settings = Settings::load();
+    // SAFETY: main thread, single-threaded, before eframe spawns any worker threads.
+    unsafe { select_backend(settings.use_kernel) };
     let options = eframe::NativeOptions::default();
     eframe::run_native(
         "reclass-rs",
@@ -61,6 +64,7 @@ pub fn run(
                 initial_pid,
                 initial_addr,
                 initial_project,
+                settings.use_kernel,
             )))
         }),
     )
@@ -172,6 +176,8 @@ struct ReClassApp {
     class_anchor: Option<usize>,
     renaming_class: Option<ClassRename>,
     flash: FlashTracker,
+    /// Whether to show the "kernel module not available" modal.
+    show_kernel_unavailable: bool,
     app_start: std::time::Instant,
     now: f64,
     recent: Vec<String>,
@@ -187,8 +193,10 @@ impl ReClassApp {
         initial_pid: Option<i32>,
         initial_addr: Option<String>,
         initial_project: Option<String>,
+        use_kernel: bool,
     ) -> Self {
-        let settings = Settings::load();
+        let mut settings = Settings::load();
+        settings.use_kernel = use_kernel;
         let mut state = AppState::new();
         state.engine.set_array_limit(settings.array_cap);
         // seed the starter class with the configured default type so the table
@@ -226,6 +234,7 @@ impl ReClassApp {
             recent: load_recent(),
             file_dialog: None,
             settings,
+            show_kernel_unavailable: false,
             show_settings: false,
             mcp: None,
         };
@@ -566,6 +575,7 @@ impl eframe::App for ReClassApp {
         self.codegen_window(&ctx);
         self.file_dialog_window(&ctx, &mut actions);
         self.settings_window(&ctx);
+        self.kernel_unavailable_window(&ctx);
 
         for a in actions {
             self.apply(a);
@@ -629,6 +639,7 @@ mod tests {
             array_cap: 512,
             mcp_enabled: true,
             mcp_port: 4001,
+            use_kernel: true,
         };
         let ron = ron::ser::to_string_pretty(&s, ron::ser::PrettyConfig::default()).unwrap();
         let back: Settings = ron::from_str(&ron).unwrap();

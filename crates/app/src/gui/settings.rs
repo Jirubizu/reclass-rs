@@ -68,6 +68,10 @@ pub(super) struct Settings {
     pub(super) mcp_enabled: bool,
     /// TCP port for the MCP server (bound to 127.0.0.1).
     pub(super) mcp_port: u16,
+    /// Use the vmem kernel driver (`/dev/vmem`) for memory access instead of
+    /// userspace syscalls. The driver must be loaded for this to take effect;
+    /// enabling it when unavailable shows a popup and reverts.
+    pub(super) use_kernel: bool,
 }
 
 impl Default for Settings {
@@ -77,6 +81,7 @@ impl Default for Settings {
             flash_color: [0xFF, 0x40, 0x40],
             flash_secs: 0.6,
             default_kind: NodeKind::Hex(IntWidth::W64),
+            use_kernel: false,
             seed_rows: 16,
             array_cap: 256,
             mcp_enabled: false,

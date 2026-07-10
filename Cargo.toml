@@ -10,7 +10,7 @@ license = "MIT"
 [workspace.dependencies]
 reclass-core = { path = "crates/core" }
 reclass-backend-vmem = { path = "crates/backend-vmem" }
-vmem = { git = "https://github.com/Jirubizu/vmem.git" }
+vmem = { git = "https://github.com/Jirubizu/vmem.git", rev = "29c5cf94c8b4", features = ["kernel"] }
 thiserror = "1"
 anyhow = "1.0.103"
 bytemuck = "1.25.0"

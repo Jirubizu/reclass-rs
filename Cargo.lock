@@ -4483,7 +4483,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vmem"
 version = "0.1.0"
-source = "git+https://github.com/Jirubizu/vmem.git#179fd4f903a5d62f77c08003d53881fbb34cd06c"
+source = "git+https://github.com/Jirubizu/vmem.git?rev=29c5cf94c8b4#29c5cf94c8b4e33753cc704708d10939d6e275cd"
 dependencies = [
  "bytemuck",
  "libc",

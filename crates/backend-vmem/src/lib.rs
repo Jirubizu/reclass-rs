@@ -3,7 +3,8 @@
 //! See `docs/vmem-api.md` for the capability → signature mapping. Addresses are
 //! `u64` in `core`'s trait and `usize` in `vmem`; on the only supported target
 //! (x86-64 Linux) those are the same width, and we cast at this boundary.
-// `unsafe` is confined to the `tracker` module (ptrace), each call SAFETY-noted.
+// `unsafe` lives in `select_backend` (env var) and the `tracker` module
+// (ptrace); each call is SAFETY-noted.
 
 use reclass_core::{MemError, MemoryBackend, Perms, Region, ScatterReq};
 use vmem::Process;
@@ -22,23 +23,19 @@ pub struct ProcInfo {
 
 /// List user-visible processes by scanning `/proc` (pid + `comm`), ascending.
 pub fn list_processes() -> Vec<ProcInfo> {
-    let mut out = Vec::new();
     let Ok(dir) = std::fs::read_dir("/proc") else {
-        return out;
+        return Vec::new();
     };
-    for entry in dir.flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|s| s.parse::<i32>().ok())
-        else {
-            continue;
-        };
-        let name = std::fs::read_to_string(format!("/proc/{pid}/comm"))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
-        out.push(ProcInfo { pid, name });
-    }
+    let mut out: Vec<ProcInfo> = dir
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<i32>().ok()?;
+            let name = std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            Some(ProcInfo { pid, name })
+        })
+        .collect();
     out.sort_by_key(|p| p.pid);
     out
 }
@@ -57,6 +54,7 @@ const VMEM_DEVICE: &str = "/dev/vmem";
 /// Check whether the vmem kernel module is loaded and the device is usable.
 ///
 /// Opens `/dev/vmem` read-write; drops the fd immediately.
+#[must_use]
 pub fn kernel_available() -> bool {
     std::fs::OpenOptions::new()
         .read(true)
@@ -94,6 +92,10 @@ pub struct VmemBackend {
 
 impl VmemBackend {
     /// Attach by pid.
+    ///
+    /// # Errors
+    /// [`MemError::NoProcess`] if no process has this pid, or
+    /// [`MemError::Permission`] if access is denied.
     pub fn by_pid(pid: i32) -> Result<Self, MemError> {
         Process::by_pid(pid)
             .map(|proc| VmemBackend { proc })
@@ -101,6 +103,10 @@ impl VmemBackend {
     }
 
     /// Attach to the first process matching `name`.
+    ///
+    /// # Errors
+    /// [`MemError::NoProcess`] if nothing matches `name`, or
+    /// [`MemError::Permission`] if access is denied.
     pub fn by_name(name: &str) -> Result<Self, MemError> {
         Process::by_name(name)
             .map(|proc| VmemBackend { proc })
@@ -108,16 +114,19 @@ impl VmemBackend {
     }
 
     /// Every pid currently matching `name`, ascending.
+    #[must_use]
     pub fn pids_by_name(name: &str) -> Vec<i32> {
         Process::all_by_name(name)
     }
 
     /// The underlying pid.
+    #[must_use]
     pub fn pid(&self) -> i32 {
         self.proc.pid()
     }
 
     /// The underlying `vmem` handle (for advanced/stretch features).
+    #[must_use]
     pub fn process(&self) -> Process {
         self.proc
     }
@@ -131,9 +140,14 @@ fn map_err(e: vmem::Error) -> MemError {
             addr: addr as u64,
             len,
         },
-        vmem::Error::Partial { addr, wanted, .. } => MemError::Unmapped {
-            addr: addr as u64,
-            len: wanted,
+        vmem::Error::Partial {
+            addr,
+            wanted,
+            moved,
+        } => MemError::Unmapped {
+            // `moved` bytes were readable; the hole starts after them.
+            addr: addr as u64 + moved as u64,
+            len: wanted.saturating_sub(moved),
         },
         vmem::Error::ModuleNotFound { module, .. } => {
             MemError::Backend(format!("module '{module}' not found"))
@@ -162,7 +176,9 @@ impl MemoryBackend for VmemBackend {
         }
         let bufs = scatter.run().map_err(map_err)?;
         for (req, data) in reqs.iter_mut().zip(bufs) {
-            // lengths match by construction
+            // vmem returns one buffer per request, each exactly the requested
+            // length; assert it so a future contract change fails loudly.
+            debug_assert_eq!(req.buf.len(), data.len());
             req.buf.copy_from_slice(&data);
         }
         Ok(())
@@ -175,12 +191,7 @@ impl MemoryBackend for VmemBackend {
             .map(|m| Region {
                 start: m.start as u64,
                 end: m.end as u64,
-                perms: Perms {
-                    read: m.readable(),
-                    write: m.writable(),
-                    execute: m.executable(),
-                    shared: m.perms.as_bytes().get(3) == Some(&b's'),
-                },
+                perms: Perms::parse(&m.perms),
                 path: m.path,
             })
             .collect())

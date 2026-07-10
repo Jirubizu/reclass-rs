@@ -3501,7 +3501,7 @@ dependencies = [
 
 [[package]]
 name = "reclass"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -3519,7 +3519,7 @@ dependencies = [
 
 [[package]]
 name = "reclass-backend-vmem"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "reclass-core",
@@ -3529,7 +3529,7 @@ dependencies = [
 
 [[package]]
 name = "reclass-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "parking_lot",

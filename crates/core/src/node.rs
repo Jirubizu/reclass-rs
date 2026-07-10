@@ -218,6 +218,12 @@ fn read_f32(bytes: &[u8]) -> f32 {
     f32::from_le_bytes(b)
 }
 
+/// Read an f32 at byte offset `off`, tolerating a short/absent slice (missing
+/// bytes read as zero) so a truncated read never panics.
+fn read_f32_at(bytes: &[u8], off: usize) -> f32 {
+    read_f32(bytes.get(off..).unwrap_or(&[]))
+}
+
 fn read_f64(bytes: &[u8]) -> f64 {
     let mut b = [0u8; 8];
     let n = bytes.len().min(8);
@@ -379,22 +385,22 @@ impl NodeKind {
             NodeKind::Vec2 => {
                 format!(
                     "({}, {})",
-                    fmt_float(f64::from(read_f32(bytes))),
-                    fmt_float(f64::from(read_f32(&bytes[4..])))
+                    fmt_float(f64::from(read_f32_at(bytes, 0))),
+                    fmt_float(f64::from(read_f32_at(bytes, 4)))
                 )
             }
             NodeKind::Vec3 => format!(
                 "({}, {}, {})",
-                fmt_float(f64::from(read_f32(bytes))),
-                fmt_float(f64::from(read_f32(&bytes[4..]))),
-                fmt_float(f64::from(read_f32(&bytes[8..]))),
+                fmt_float(f64::from(read_f32_at(bytes, 0))),
+                fmt_float(f64::from(read_f32_at(bytes, 4))),
+                fmt_float(f64::from(read_f32_at(bytes, 8))),
             ),
             NodeKind::Vec4 => format!(
                 "({}, {}, {}, {})",
-                fmt_float(f64::from(read_f32(bytes))),
-                fmt_float(f64::from(read_f32(&bytes[4..]))),
-                fmt_float(f64::from(read_f32(&bytes[8..]))),
-                fmt_float(f64::from(read_f32(&bytes[12..]))),
+                fmt_float(f64::from(read_f32_at(bytes, 0))),
+                fmt_float(f64::from(read_f32_at(bytes, 4))),
+                fmt_float(f64::from(read_f32_at(bytes, 8))),
+                fmt_float(f64::from(read_f32_at(bytes, 12))),
             ),
             NodeKind::Text { encoding, .. } => format_text(bytes, *encoding),
             NodeKind::Pointer | NodeKind::FunctionPtr => {
@@ -702,5 +708,17 @@ mod tests {
     fn pointer_roundtrip_edit() {
         let bytes = NodeKind::Pointer.parse_edit("0x7fff1234").unwrap();
         assert_eq!(u64::from_le_bytes(bytes.try_into().unwrap()), 0x7fff_1234);
+    }
+
+    #[test]
+    fn vec_format_tolerates_short_slice() {
+        // A truncated read must render, not panic on `&bytes[4..]` etc.
+        let reg = ClassRegistry::new();
+        let ctx = FmtCtx::new(&reg);
+        for kind in [NodeKind::Vec2, NodeKind::Vec3, NodeKind::Vec4] {
+            for len in 0..=kind.fixed_size() {
+                let _ = kind.format(&vec![0u8; len], &ctx);
+            }
+        }
     }
 }

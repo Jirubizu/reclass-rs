@@ -299,7 +299,7 @@ impl ReClassApp {
                 path,
             } => {
                 if let Err(e) = self.state.expand_pointer(owner, idx, root, path) {
-                    self.error = Some(e);
+                    self.error = Some(e.to_string());
                 }
             }
             Action::StartEdit(root, path, field, buf) => {
@@ -351,7 +351,7 @@ impl ReClassApp {
                     .state
                     .push_node(cid, Node::new(format!("field_{off:x}"), kind))
                 {
-                    self.error = Some(e);
+                    self.error = Some(e.to_string());
                 }
             }
             Action::AddBytes(cid, n) => {
@@ -359,7 +359,7 @@ impl ReClassApp {
             }
             Action::AddArray(cid, element, count) => {
                 if let Err(e) = self.state.add_array(cid, element, count) {
-                    self.error = Some(e);
+                    self.error = Some(e.to_string());
                 }
             }
             Action::InsertAfter(cid, idx, kind) => {
@@ -367,7 +367,7 @@ impl ReClassApp {
                     self.state
                         .insert_after(cid, idx, Node::new(format!("field_{idx}"), kind))
                 {
-                    self.error = Some(e);
+                    self.error = Some(e.to_string());
                 }
             }
             Action::DeleteNode(cid, idx) => {
@@ -376,7 +376,7 @@ impl ReClassApp {
             Action::DeleteSelected => self.delete_selected(),
             Action::ChangeKind(cid, idx, kind) => {
                 if let Err(e) = self.state.change_kind(cid, idx, kind) {
-                    self.error = Some(e);
+                    self.error = Some(e.to_string());
                 }
             }
             Action::SetArrayCount(cid, idx, n) => {
@@ -386,7 +386,7 @@ impl ReClassApp {
             Action::CollapseAll => self.state.collapse_all(),
             Action::Save(path) => {
                 if let Err(e) = self.state.save(&path) {
-                    self.error = Some(e);
+                    self.error = Some(e.to_string());
                 } else {
                     self.state.status = format!("saved {path}");
                     self.remember(&path);
@@ -394,7 +394,7 @@ impl ReClassApp {
             }
             Action::Load(path) => {
                 if let Err(e) = self.state.load(&path) {
-                    self.error = Some(e);
+                    self.error = Some(e.to_string());
                 } else {
                     self.state.status = format!("loaded {path}");
                     self.clear_selection();
@@ -467,7 +467,7 @@ impl ReClassApp {
                 if let Some(row) = rows.iter().find(|r| r.root == ed.root && r.path == ed.path)
                     && let Err(e) = self.state.write_value(row.address, &row.kind, &ed.buf)
                 {
-                    self.error = Some(e);
+                    self.error = Some(e.to_string());
                 }
             }
         }

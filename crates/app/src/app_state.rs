@@ -3,12 +3,51 @@
 
 use reclass_core::backend::Region;
 use reclass_core::codegen::{Language, generate, generate_project};
-use reclass_core::project::{Project, View};
+use reclass_core::project::{Project, ProjectError, View};
 use reclass_core::{
-    AddrExpr, AddrInfo, ClassId, Engine, ExpandState, IntWidth, MemError, MemoryBackend, Node,
-    NodeKind, PathSeg, Root, Row,
+    AddrExpr, AddrInfo, ClassId, EditErr, Engine, ExpandState, IntWidth, MemError, MemoryBackend,
+    Node, NodeKind, PathSeg, RegistryError, Root, Row,
 };
 use std::collections::HashMap;
+
+/// Error from an [`AppState`] edit, write, or project IO operation.
+#[derive(Debug, thiserror::Error)]
+pub enum AppError {
+    /// A registry / layout edit failed.
+    #[error(transparent)]
+    Registry(#[from] RegistryError),
+    /// Parsing a value for its node kind failed.
+    #[error(transparent)]
+    Edit(#[from] EditErr),
+    /// A memory read/write failed.
+    #[error(transparent)]
+    Mem(#[from] MemError),
+    /// Saving or loading a project failed.
+    #[error(transparent)]
+    Project(#[from] ProjectError),
+    /// The edit would create an inline `ClassInstance` cycle.
+    #[error("would create an inline class cycle")]
+    Cycle,
+    /// No target process is attached.
+    #[error("not attached")]
+    NotAttached,
+    /// A filesystem error while writing a generated project, with the path.
+    #[error("{path}: {source}")]
+    Io {
+        /// The path being written.
+        path: String,
+        /// The underlying IO error.
+        source: std::io::Error,
+    },
+}
+
+/// Bridge to the MCP/JSON-RPC layer and status lines, whose error type is a
+/// plain display string.
+impl From<AppError> for String {
+    fn from(e: AppError) -> Self {
+        e.to_string()
+    }
+}
 
 /// Resolves an address to a `module+offset` / region label for pointer display.
 pub struct AddrResolver<'a> {
@@ -36,11 +75,13 @@ struct Walk<'a> {
     visited: std::collections::HashSet<ClassId>,
     aggs: Vec<Vec<PathSeg>>,
     ptrs: Vec<Vec<PathSeg>>,
+    /// Element cap for arrays-of-class, matching the engine's render cap so
+    /// expand/collapse-all covers exactly the elements that get rendered.
+    elem_cap: usize,
 }
 
 impl Walk<'_> {
     const MAX_DEPTH: usize = 16;
-    const ELEM_CAP: usize = 64;
 
     fn class(&mut self, class: ClassId, base: Vec<PathSeg>, depth: usize) {
         let Some(c) = self.reg.get(class) else { return };
@@ -76,7 +117,7 @@ impl Walk<'_> {
                         | NodeKind::ClassPtr { .. }
                         | NodeKind::Array { .. }
                 ) {
-                    for e in 0..(*count).min(Self::ELEM_CAP) {
+                    for e in 0..(*count).min(self.elem_cap) {
                         let mut ep = path.clone();
                         ep.push(PathSeg::Elem(e));
                         self.kind(element, ep, depth);
@@ -369,6 +410,7 @@ impl AppState {
             visited: std::collections::HashSet::from([class]),
             aggs: std::mem::take(aggs),
             ptrs: std::mem::take(ptrs),
+            elem_cap: self.engine.array_limit(),
         };
         w.class(class, Vec::new(), 0);
         *aggs = w.aggs;
@@ -381,9 +423,9 @@ impl AppState {
         class: ClassId,
         element: NodeKind,
         count: usize,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppError> {
         if self.project.registry.kind_would_cycle(class, &element) {
-            return Err("would create an inline class cycle".to_string());
+            return Err(AppError::Cycle);
         }
         let off = self.project.registry.size_of(class);
         self.push_node(
@@ -407,7 +449,7 @@ impl AppState {
         idx: usize,
         root: usize,
         path: Vec<PathSeg>,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppError> {
         let reg = &mut self.project.registry;
         let name = format!("Auto{}", reg.len());
         let target = reg.add_class(name);
@@ -415,20 +457,18 @@ impl AppState {
             target,
             (0..16).map(|i| Node::new(format!("field_{:X}", i * 8), NodeKind::Hex(IntWidth::W64))),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(AppError::from)?;
         reg.set_kind(owner, idx, NodeKind::ClassPtr { class_id: target })
-            .map_err(|e| e.to_string())?;
+            .map_err(AppError::from)?;
         self.expand.expand(root, path);
         Ok(())
     }
 
     /// Write a new value to a scalar node (parsed by its kind).
-    pub fn write_value(&mut self, addr: u64, kind: &NodeKind, input: &str) -> Result<(), String> {
-        let bytes = kind.parse_edit(input).map_err(|e| e.to_string())?;
-        let backend = self.backend.as_ref().ok_or("not attached")?;
-        backend
-            .write(addr, &bytes)
-            .map_err(|e: MemError| e.to_string())
+    pub fn write_value(&mut self, addr: u64, kind: &NodeKind, input: &str) -> Result<(), AppError> {
+        let bytes = kind.parse_edit(input)?;
+        let backend = self.backend.as_ref().ok_or(AppError::NotAttached)?;
+        backend.write(addr, &bytes).map_err(AppError::from)
     }
 
     /// Resolve a row path to the `(owning class, node index)` it identifies.
@@ -468,17 +508,17 @@ impl AppState {
     }
 
     /// Append a node to a class.
-    pub fn push_node(&mut self, class: ClassId, node: Node) -> Result<(), String> {
+    pub fn push_node(&mut self, class: ClassId, node: Node) -> Result<(), AppError> {
         self.project
             .registry
             .push_node(class, node)
-            .map_err(|e| e.to_string())
+            .map_err(AppError::from)
     }
 
     /// Append `n` bytes worth of fields to a class: as many `Hex64` rows as fit,
     /// then `Hex8` rows for any remainder. Lets the user grow a class in bulk
     /// (e.g. 1024 bytes) instead of one field at a time.
-    pub fn add_bytes(&mut self, class: ClassId, n: usize) -> Result<(), String> {
+    pub fn add_bytes(&mut self, class: ClassId, n: usize) -> Result<(), AppError> {
         let mut off = self.project.registry.size_of(class);
         let mut nodes = Vec::with_capacity(n.div_ceil(8));
         let mut remaining = n;
@@ -501,24 +541,24 @@ impl AppState {
         self.project
             .registry
             .push_nodes(class, nodes)
-            .map_err(|e| e.to_string())
+            .map_err(AppError::from)
     }
 
     /// Insert a node after `idx` in `class`.
-    pub fn insert_after(&mut self, class: ClassId, idx: usize, node: Node) -> Result<(), String> {
+    pub fn insert_after(&mut self, class: ClassId, idx: usize, node: Node) -> Result<(), AppError> {
         self.project
             .registry
             .insert_node(class, idx + 1, node)
-            .map_err(|e| e.to_string())
+            .map_err(AppError::from)
     }
 
     /// Delete node `idx` from `class`.
-    pub fn delete_node(&mut self, class: ClassId, idx: usize) -> Result<(), String> {
+    pub fn delete_node(&mut self, class: ClassId, idx: usize) -> Result<(), AppError> {
         self.project
             .registry
             .remove_node(class, idx)
             .map(|_| ())
-            .map_err(|e| e.to_string())
+            .map_err(AppError::from)
     }
 
     /// Delete several nodes at once. Sorts by class then by descending index so
@@ -538,14 +578,14 @@ impl AppState {
         class: ClassId,
         idx: usize,
         kind: NodeKind,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppError> {
         if self.project.registry.kind_would_cycle(class, &kind) {
-            return Err("would create an inline class cycle".to_string());
+            return Err(AppError::Cycle);
         }
         self.project
             .registry
             .set_kind(class, idx, kind)
-            .map_err(|e| e.to_string())
+            .map_err(AppError::from)
     }
 
     /// Set the element count of an array node.
@@ -554,19 +594,24 @@ impl AppState {
         class: ClassId,
         idx: usize,
         count: usize,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppError> {
         self.project
             .registry
             .set_array_count(class, idx, count)
-            .map_err(|e| e.to_string())
+            .map_err(AppError::from)
     }
 
     /// Rename a node.
-    pub fn rename_node(&mut self, class: ClassId, idx: usize, name: String) -> Result<(), String> {
+    pub fn rename_node(
+        &mut self,
+        class: ClassId,
+        idx: usize,
+        name: String,
+    ) -> Result<(), AppError> {
         self.project
             .registry
             .rename_node(class, idx, name)
-            .map_err(|e| e.to_string())
+            .map_err(AppError::from)
     }
 
     /// Set a node's comment.
@@ -575,27 +620,27 @@ impl AppState {
         class: ClassId,
         idx: usize,
         comment: String,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppError> {
         self.project
             .registry
             .set_comment(class, idx, comment)
-            .map_err(|e| e.to_string())
+            .map_err(AppError::from)
     }
 
     /// Rename a class.
-    pub fn rename_class(&mut self, id: ClassId, name: String) -> Result<(), String> {
+    pub fn rename_class(&mut self, id: ClassId, name: String) -> Result<(), AppError> {
         self.project
             .registry
             .rename_class(id, name)
-            .map_err(|e| e.to_string())
+            .map_err(AppError::from)
     }
 
     /// Set the address expression of a class.
-    pub fn set_address_expr(&mut self, id: ClassId, expr: String) -> Result<(), String> {
+    pub fn set_address_expr(&mut self, id: ClassId, expr: String) -> Result<(), AppError> {
         self.project
             .registry
             .set_address_expr(id, expr)
-            .map_err(|e| e.to_string())
+            .map_err(AppError::from)
     }
 
     // -- project / codegen -------------------------------------------------
@@ -608,7 +653,7 @@ impl AppState {
     /// Generate a standalone `vmem`-backed Cargo project mirroring the current
     /// classes into `dir` (created if needed). Returns the number of files
     /// written. The crate is named after `dir`'s final component.
-    pub fn generate_project(&self, dir: &str) -> Result<usize, String> {
+    pub fn generate_project(&self, dir: &str) -> Result<usize, AppError> {
         use std::path::Path;
         let root = Path::new(dir);
         let crate_name = root
@@ -624,22 +669,27 @@ impl AppState {
         for (rel, contents) in &files {
             let path = root.join(rel);
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("{}: {e}", parent.display()))?;
+                std::fs::create_dir_all(parent).map_err(|e| AppError::Io {
+                    path: parent.display().to_string(),
+                    source: e,
+                })?;
             }
-            std::fs::write(&path, contents).map_err(|e| format!("{}: {e}", path.display()))?;
+            std::fs::write(&path, contents).map_err(|e| AppError::Io {
+                path: path.display().to_string(),
+                source: e,
+            })?;
         }
         Ok(files.len())
     }
 
     /// Save the project to a RON file.
-    pub fn save(&self, path: &str) -> Result<(), String> {
-        self.project.save(path).map_err(|e| e.to_string())
+    pub fn save(&self, path: &str) -> Result<(), AppError> {
+        self.project.save(path).map_err(AppError::from)
     }
 
     /// Load a project from a RON file (replaces state).
-    pub fn load(&mut self, path: &str) -> Result<(), String> {
-        let project = Project::load(path).map_err(|e| e.to_string())?;
+    pub fn load(&mut self, path: &str) -> Result<(), AppError> {
+        let project = Project::load(path)?;
         self.project = project;
         self.expand = ExpandState::new();
         self.selected_view = 0;

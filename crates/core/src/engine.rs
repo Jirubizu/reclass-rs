@@ -195,12 +195,15 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Default array-expansion cap when none is configured.
+    const DEFAULT_ARRAY_LIMIT: usize = 256;
+
     /// A fresh engine with a default array-expansion cap of 256 elements.
     #[must_use]
     pub fn new() -> Self {
         Engine {
             buf_pool: Vec::new(),
-            array_limit: 256,
+            array_limit: Self::DEFAULT_ARRAY_LIMIT,
             last_levels: 0,
         }
     }
@@ -208,6 +211,16 @@ impl Engine {
     /// Maximum array elements rendered per array node.
     pub fn set_array_limit(&mut self, limit: usize) {
         self.array_limit = limit.max(1);
+    }
+
+    /// Effective array-expansion cap (elements rendered per array node).
+    #[must_use]
+    pub fn array_limit(&self) -> usize {
+        if self.array_limit == 0 {
+            Self::DEFAULT_ARRAY_LIMIT
+        } else {
+            self.array_limit
+        }
     }
 
     /// Number of read levels (scatter calls on the happy path) the last
@@ -231,11 +244,7 @@ impl Engine {
         info: Option<&dyn AddrInfo>,
     ) -> Vec<Row> {
         self.last_levels = 0;
-        let array_limit = if self.array_limit == 0 {
-            256
-        } else {
-            self.array_limit
-        };
+        let array_limit = self.array_limit();
         let ctx = Ctx {
             reg,
             expand,

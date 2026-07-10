@@ -347,20 +347,28 @@ impl ReClassApp {
             }
             Action::PushNode(cid, kind) => {
                 let off = self.state.project.registry.size_of(cid);
-                let _ = self
+                if let Err(e) = self
                     .state
-                    .push_node(cid, Node::new(format!("field_{off:x}"), kind));
+                    .push_node(cid, Node::new(format!("field_{off:x}"), kind))
+                {
+                    self.error = Some(e);
+                }
             }
             Action::AddBytes(cid, n) => {
                 let _ = self.state.add_bytes(cid, n);
             }
             Action::AddArray(cid, element, count) => {
-                let _ = self.state.add_array(cid, element, count);
+                if let Err(e) = self.state.add_array(cid, element, count) {
+                    self.error = Some(e);
+                }
             }
             Action::InsertAfter(cid, idx, kind) => {
-                let _ = self
-                    .state
-                    .insert_after(cid, idx, Node::new(format!("field_{idx}"), kind));
+                if let Err(e) =
+                    self.state
+                        .insert_after(cid, idx, Node::new(format!("field_{idx}"), kind))
+                {
+                    self.error = Some(e);
+                }
             }
             Action::DeleteNode(cid, idx) => {
                 let _ = self.state.delete_node(cid, idx);

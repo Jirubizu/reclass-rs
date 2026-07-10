@@ -810,6 +810,12 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
         .strip_prefix("0x")
         .or_else(|| s.strip_prefix("0X"))
         .unwrap_or(s);
+    // Byte-index slicing below assumes one byte per char; reject non-ASCII so a
+    // multibyte codepoint (e.g. "😀", 4 bytes, even length) cannot slice across
+    // a char boundary and panic.
+    if !s.is_ascii() {
+        return Err("hex string must be ASCII".to_string());
+    }
     if !s.len().is_multiple_of(2) {
         return Err("hex string has odd length".to_string());
     }
@@ -880,5 +886,8 @@ mod tests {
         assert_eq!(hex_encode(&[0xde, 0xad]), "dead");
         assert_eq!(hex_decode("dead").unwrap(), vec![0xde, 0xad]);
         assert!(hex_decode("abc").is_err());
+        // non-ASCII must be rejected, not panic mid-codepoint (regression)
+        assert!(hex_decode("😀").is_err());
+        assert!(hex_decode("0xdead").unwrap() == vec![0xde, 0xad]);
     }
 }

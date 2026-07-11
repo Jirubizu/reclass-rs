@@ -102,9 +102,14 @@ jobs:
           name: reclass-linux-x86_64
 
       - name: Generate changelog from push commits
+        env:
+          # Pass the commits JSON through the environment, NOT spliced into the
+          # shell source: a commit message containing a quote/backtick would
+          # otherwise break `echo '<json>'` (and allow script injection).
+          COMMITS: ${{ toJson(github.event.commits) }}
         run: |
-          echo '${{ toJson(github.event.commits) }}' |
-          jq -r --arg pfx '* ' '.[] | select(.distinct) | $pfx + (.message | split("\n") | .[0])' > /tmp/changelog.md
+          printf '%s' "${COMMITS:-[]}" |
+          jq -r '(. // []) | .[] | select(.distinct) | "* " + (.message | split("\n")[0])' > /tmp/changelog.md
           { cat /tmp/changelog.md; echo; } >> "$GITHUB_STEP_SUMMARY"
       - name: Publish release
         uses: softprops/action-gh-release@v2

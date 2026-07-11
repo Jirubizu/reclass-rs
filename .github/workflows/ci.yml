@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [master, main]
+    tags: ["v*"]
   pull_request:
 
 env:
@@ -96,26 +97,56 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history + tags for the changelog range
+
       - name: Download binary
         uses: actions/download-artifact@v4
         with:
           name: reclass-linux-x86_64
 
-      - name: Generate changelog from push commits
-        env:
-          # Pass the commits JSON through the environment, NOT spliced into the
-          # shell source: a commit message containing a quote/backtick would
-          # otherwise break `echo '<json>'` (and allow script injection).
-          COMMITS: ${{ toJson(github.event.commits) }}
+      - name: Determine release metadata
+        id: meta
         run: |
-          printf '%s' "${COMMITS:-[]}" |
-          jq -r '(. // []) | .[] | select(.distinct) | "* " + (.message | split("\n")[0])' > /tmp/changelog.md
-          { cat /tmp/changelog.md; echo; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            {
+              echo "tag=$GITHUB_REF_NAME"
+              echo "name=$GITHUB_REF_NAME"
+              echo "prerelease=false"
+              echo "latest=true"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "tag=continuous"
+              echo "name=Continuous build"
+              echo "prerelease=true"
+              echo "latest=false"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate changelog
+        run: |
+          # Previous v* release reachable from HEAD, excluding the current tag.
+          prev=$(git tag --list 'v*' --sort=-v:refname --merged HEAD \
+                   | grep -vFx "$GITHUB_REF_NAME" | head -n1)
+          if [ -n "$prev" ]; then
+            printf '## Changes since %s\n\n' "$prev" > /tmp/changelog.md
+            range="$prev..HEAD"
+          else
+            printf '## Changes\n\n' > /tmp/changelog.md
+            range=HEAD
+          fi
+          git log --no-merges --reverse --pretty='* %s' "$range" >> /tmp/changelog.md
+          cat /tmp/changelog.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: continuous
-          name: Continuous build
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          prerelease: ${{ steps.meta.outputs.prerelease }}
+          make_latest: ${{ steps.meta.outputs.latest }}
           body_path: /tmp/changelog.md
           files: reclass
-          make_latest: true

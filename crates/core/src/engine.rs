@@ -185,6 +185,57 @@ struct Ctx<'a> {
     array_limit: usize,
 }
 
+/// Where a class buffer sits while formatting: the frame, its byte offset into
+/// that frame's buffer, the tree depth, and the root-relative path prefix.
+struct ClassAt<'a> {
+    fi: usize,
+    class_id: ClassId,
+    buf_off: usize,
+    depth: u32,
+    base_path: &'a [PathSeg],
+}
+
+/// Where a single node sits while formatting.
+struct NodeAt<'a> {
+    fi: usize,
+    off: usize,
+    local_off: usize,
+    depth: u32,
+    path: Vec<PathSeg>,
+    name: &'a str,
+    comment: &'a str,
+}
+
+impl NodeAt<'_> {
+    /// This node's row with position/identity filled and value/hex/expand at
+    /// leaf defaults; each `format_kind` arm overrides only what differs.
+    fn base_row(
+        &self,
+        root: usize,
+        address: u64,
+        readable: bool,
+        kind: &NodeKind,
+        ctx: &Ctx<'_>,
+    ) -> Row {
+        Row {
+            depth: self.depth,
+            root,
+            offset: self.local_off,
+            address,
+            type_label: kind.label(ctx.reg),
+            name: self.name.to_string(),
+            value: String::new(),
+            hex: String::new(),
+            kind: kind.clone(),
+            comment: self.comment.to_string(),
+            expandable: false,
+            expanded: false,
+            path: self.path.clone(),
+            readable,
+        }
+    }
+}
+
 /// The render engine. Holds reusable buffers; create one and call
 /// [`snapshot`](Self::snapshot) each tick.
 #[derive(Debug, Default)]
@@ -318,11 +369,13 @@ impl Engine {
         for fi in 0..n_roots {
             format_class(
                 &frames,
-                fi,
-                frames[fi].class_id,
-                0,
-                0,
-                &frames[fi].base_path,
+                ClassAt {
+                    fi,
+                    class_id: frames[fi].class_id,
+                    buf_off: 0,
+                    depth: 0,
+                    base_path: &frames[fi].base_path,
+                },
                 &ctx,
                 &mut rows,
             );
@@ -522,57 +575,47 @@ fn discover_kind(
 
 // -- formatting ------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
-fn format_class(
-    frames: &[Frame],
-    fi: usize,
-    class_id: ClassId,
-    buf_off: usize,
-    depth: u32,
-    base_path: &[PathSeg],
-    ctx: &Ctx<'_>,
-    out: &mut Vec<Row>,
-) {
-    let Some(class) = ctx.reg.get(class_id) else {
+fn format_class(frames: &[Frame], at: ClassAt<'_>, ctx: &Ctx<'_>, out: &mut Vec<Row>) {
+    let Some(class) = ctx.reg.get(at.class_id) else {
         return;
     };
     let mut local_off = 0usize;
     for (i, node) in class.nodes.iter().enumerate() {
-        let node_off = buf_off + local_off;
+        let node_off = at.buf_off + local_off;
         let cur_off = local_off;
         local_off += node.kind.size(ctx.reg);
-        let mut p = base_path.to_vec();
+        let mut p = at.base_path.to_vec();
         p.push(PathSeg::Node(i));
         format_kind(
             frames,
-            fi,
             &node.kind,
-            node_off,
-            cur_off,
-            depth,
-            p,
-            &node.name,
-            &node.comment,
+            NodeAt {
+                fi: at.fi,
+                off: node_off,
+                local_off: cur_off,
+                depth: at.depth,
+                path: p,
+                name: &node.name,
+                comment: &node.comment,
+            },
             ctx,
             out,
         );
     }
 }
-#[allow(clippy::too_many_arguments)]
+
 fn format_kind(
     frames: &[Frame],
-    fi: usize,
     kind: &NodeKind,
-    off: usize,
-    local_off: usize,
-    depth: u32,
-    path: Vec<PathSeg>,
-    name: &str,
-    comment: &str,
+    at: NodeAt<'_>,
     ctx: &Ctx<'_>,
     out: &mut Vec<Row>,
 ) {
+    let fi = at.fi;
+    let off = at.off;
+    let depth = at.depth;
     let frame = &frames[fi];
+    let root = frame.root;
     let addr = frame.base.wrapping_add(off as u64);
     let size = kind.size(ctx.reg);
     let slice = frame.buf.get(off..off + size);
@@ -580,44 +623,35 @@ fn format_kind(
 
     match kind {
         NodeKind::ClassInstance { class_id } => {
-            let expanded = !ctx.expand.is_collapsed(frame.root, &path);
+            let expanded = !ctx.expand.is_collapsed(root, &at.path);
             out.push(Row {
-                depth,
-                root: frame.root,
-                offset: local_off,
-                address: addr,
-                type_label: kind.label(ctx.reg),
-                name: name.to_string(),
                 value: value_of(kind, slice, addr, readable, ctx),
-                hex: String::new(),
-                kind: kind.clone(),
-                comment: comment.to_string(),
                 expandable: true,
                 expanded,
-                path: path.clone(),
-                readable,
+                ..at.base_row(root, addr, readable, kind, ctx)
             });
             if expanded {
-                format_class(frames, fi, *class_id, off, depth + 1, &path, ctx, out);
+                format_class(
+                    frames,
+                    ClassAt {
+                        fi,
+                        class_id: *class_id,
+                        buf_off: off,
+                        depth: depth + 1,
+                        base_path: &at.path,
+                    },
+                    ctx,
+                    out,
+                );
             }
         }
         NodeKind::Array { element, count } => {
-            let expanded = !ctx.expand.is_collapsed(frame.root, &path);
+            let expanded = !ctx.expand.is_collapsed(root, &at.path);
             out.push(Row {
-                depth,
-                root: frame.root,
-                offset: local_off,
-                address: addr,
-                type_label: kind.label(ctx.reg),
-                name: name.to_string(),
                 value: format!("{}[{count}]", element.label(ctx.reg)),
-                hex: String::new(),
-                kind: kind.clone(),
-                comment: comment.to_string(),
                 expandable: true,
                 expanded,
-                path: path.clone(),
-                readable,
+                ..at.base_row(root, addr, readable, kind, ctx)
             });
             if !expanded {
                 return;
@@ -626,18 +660,21 @@ fn format_kind(
             let shown = (*count).min(ctx.array_limit);
             for e in 0..shown {
                 let eoff = off + e * esz;
-                let mut ep = path.clone();
+                let mut ep = at.path.clone();
                 ep.push(PathSeg::Elem(e));
+                let name = format!("[{e}]");
                 format_kind(
                     frames,
-                    fi,
                     element,
-                    eoff,
-                    e * esz,
-                    depth + 1,
-                    ep,
-                    &format!("[{e}]"),
-                    "",
+                    NodeAt {
+                        fi,
+                        off: eoff,
+                        local_off: e * esz,
+                        depth: depth + 1,
+                        path: ep,
+                        name: &name,
+                        comment: "",
+                    },
                     ctx,
                     out,
                 );
@@ -645,7 +682,7 @@ fn format_kind(
             if *count > shown {
                 out.push(Row {
                     depth: depth + 1,
-                    root: frame.root,
+                    root,
                     offset: shown * esz,
                     address: frame.base.wrapping_add((off + shown * esz) as u64),
                     type_label: String::new(),
@@ -656,69 +693,50 @@ fn format_kind(
                     comment: String::new(),
                     expandable: false,
                     expanded: false,
-                    path: path.clone(),
+                    path: at.path.clone(),
                     readable,
                 });
             }
         }
         NodeKind::ClassPtr { class_id } => {
-            let expanded = ctx.expand.is_expanded(frame.root, &path);
+            let expanded = ctx.expand.is_expanded(root, &at.path);
             out.push(Row {
-                depth,
-                root: frame.root,
-                offset: local_off,
-                address: addr,
-                type_label: kind.label(ctx.reg),
-                name: name.to_string(),
                 value: value_of(kind, slice, addr, readable, ctx),
                 hex: hex_preview(slice),
-                kind: kind.clone(),
-                comment: comment.to_string(),
                 expandable: true,
                 expanded,
-                path: path.clone(),
-                readable,
+                ..at.base_row(root, addr, readable, kind, ctx)
             });
-            if expanded && let Some(&child_fi) = frame.children.get(&path) {
-                format_class(frames, child_fi, *class_id, 0, depth + 1, &path, ctx, out);
+            if expanded && let Some(&child_fi) = frame.children.get(&at.path) {
+                format_class(
+                    frames,
+                    ClassAt {
+                        fi: child_fi,
+                        class_id: *class_id,
+                        buf_off: 0,
+                        depth: depth + 1,
+                        base_path: &at.path,
+                    },
+                    ctx,
+                    out,
+                );
             }
         }
         NodeKind::Pointer => {
             // A plain pointer is expandable in the UI: expanding it converts the
             // node to a ClassPtr over an auto-created class (ReClass behaviour).
             out.push(Row {
-                depth,
-                root: frame.root,
-                offset: local_off,
-                address: addr,
-                type_label: kind.label(ctx.reg),
-                name: name.to_string(),
                 value: value_of(kind, slice, addr, readable, ctx),
                 hex: hex_preview(slice),
-                kind: kind.clone(),
-                comment: comment.to_string(),
                 expandable: true,
-                expanded: false,
-                path,
-                readable,
+                ..at.base_row(root, addr, readable, kind, ctx)
             });
         }
         _ => {
             out.push(Row {
-                depth,
-                root: frame.root,
-                offset: local_off,
-                address: addr,
-                type_label: kind.label(ctx.reg),
-                name: name.to_string(),
                 value: value_of(kind, slice, addr, readable, ctx),
                 hex: hex_preview(slice),
-                kind: kind.clone(),
-                comment: comment.to_string(),
-                expandable: false,
-                expanded: false,
-                path,
-                readable,
+                ..at.base_row(root, addr, readable, kind, ctx)
             });
         }
     }

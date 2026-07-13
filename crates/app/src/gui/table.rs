@@ -9,6 +9,14 @@ use super::widgets::{
 };
 use super::{Action, EditField, ReClassApp, col, w};
 
+/// Visual spec for one inline-editable table cell.
+struct CellStyle<'a> {
+    text: &'a str,
+    width: Option<f32>,
+    height: f32,
+    color: egui::Color32,
+}
+
 impl ReClassApp {
     pub(super) fn central(
         &mut self,
@@ -357,10 +365,12 @@ impl ReClassApp {
                 ui,
                 row,
                 EditField::Name,
-                &row.name,
-                Some(w::NAME),
-                row_h,
-                col::NAME,
+                CellStyle {
+                    text: &row.name,
+                    width: Some(w::NAME),
+                    height: row_h,
+                    color: col::NAME,
+                },
                 actions,
             );
             // Value / Bytes / Comment are content-sized so the full text shows
@@ -369,10 +379,12 @@ impl ReClassApp {
                     ui,
                     row,
                     EditField::Value,
-                    &row.value,
-                    None,
-                    row_h,
-                    value_color,
+                    CellStyle {
+                        text: &row.value,
+                        width: None,
+                        height: row_h,
+                        color: value_color,
+                    },
                     actions,
                 );
             } else {
@@ -385,10 +397,12 @@ impl ReClassApp {
                 ui,
                 row,
                 EditField::Comment,
-                &row.comment,
-                None,
-                row_h,
-                col::COMMENT,
+                CellStyle {
+                    text: &row.comment,
+                    width: None,
+                    height: row_h,
+                    color: col::COMMENT,
+                },
                 actions,
             );
         });
@@ -423,18 +437,20 @@ impl ReClassApp {
 
     /// Render an inline editor (sized) if this row+field is being edited,
     /// otherwise a double-clickable sized label.
-    #[allow(clippy::too_many_arguments)]
     fn edit_cell(
         &mut self,
         ui: &mut egui::Ui,
         row: &Row,
         field: EditField,
-        text: &str,
-        width: Option<f32>,
-        height: f32,
-        color: egui::Color32,
+        style: CellStyle<'_>,
         actions: &mut Vec<Action>,
     ) {
+        let CellStyle {
+            text,
+            width,
+            height,
+            color,
+        } = style;
         let is_editing = self
             .editing
             .as_ref()

@@ -687,5 +687,27 @@ impl ReClassApp {
                 }
             });
         }
+        // Plugin-contributed entries, keyed to the resolved owning node.
+        if let Some((cls, idx)) = owner {
+            let infos = self.plugins.infos();
+            let mut sep_done = false;
+            for info in &infos {
+                for (id, label) in &info.menu_entries {
+                    if !sep_done {
+                        ui.separator();
+                        sep_done = true;
+                    }
+                    if ui.button(label).clicked() {
+                        actions.push(Action::PluginContextMenu {
+                            plugin: info.idx,
+                            id: id.clone(),
+                            class: cls,
+                            idx,
+                        });
+                        ui.close();
+                    }
+                }
+            }
+        }
     }
 }

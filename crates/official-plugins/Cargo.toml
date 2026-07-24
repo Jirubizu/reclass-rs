@@ -1,0 +1,15 @@
+[package]
+name = "reclass-official-plugins"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Bundled first-party reclass-rs plugins"
+
+[lib]
+crate-type = ["cdylib"]
+
+# Same-toolchain contract: this MUST track the host's `reclass` build exactly.
+[dependencies]
+reclass = { path = "../app", default-features = false, features = ["gui"] }
+serde_json = "1.0.140"

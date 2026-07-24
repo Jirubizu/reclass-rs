@@ -1,0 +1,15 @@
+[package]
+name = "reclass-example-plugin"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Reference reclass-rs plugin: a snapshot change logger"
+
+[lib]
+crate-type = ["cdylib"]
+
+# Same-toolchain contract: this MUST track the host's `reclass` build exactly.
+# Depending on the workspace crate by path guarantees that here.
+[dependencies]
+reclass = { path = "../app", default-features = false, features = ["gui"] }

@@ -198,6 +198,7 @@ impl ReClassApp {
                     ui.checkbox(&mut self.show_codegen, "Code generation");
                     ui.separator();
                     ui.checkbox(&mut self.show_settings, "Settings");
+                    ui.checkbox(&mut self.show_plugins, "Plugins");
                 });
                 ui.separator();
                 ui.label("Refresh Hz:");

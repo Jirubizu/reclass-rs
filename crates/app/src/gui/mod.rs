@@ -15,6 +15,7 @@ use reclass_core::codegen::Language;
 use reclass_core::{ClassId, Node, NodeKind, PathSeg};
 
 use crate::app_state::AppState;
+use crate::plugin::{PluginAction, PluginManager};
 
 mod flash;
 mod panels;
@@ -151,6 +152,13 @@ enum Action {
     Load(String),
     /// Generate a `vmem`-backed Cargo project into the given directory.
     GenerateProject(String),
+    /// A plugin context-menu entry was activated on node `(class, idx)`.
+    PluginContextMenu {
+        plugin: usize,
+        id: String,
+        class: ClassId,
+        idx: usize,
+    },
 }
 
 struct ReClassApp {
@@ -186,6 +194,12 @@ struct ReClassApp {
     show_settings: bool,
     /// Running MCP server (in-process control surface), or `None` when off.
     mcp: Option<crate::mcp::McpRuntime>,
+    /// Loaded plugins + their hooks.
+    plugins: PluginManager,
+    /// Whether the plugin manager window is open.
+    show_plugins: bool,
+    /// Text a plugin asked to place on the clipboard; flushed next frame.
+    pending_clipboard: Option<String>,
 }
 
 impl ReClassApp {
@@ -237,7 +251,25 @@ impl ReClassApp {
             show_kernel_unavailable: false,
             show_settings: false,
             mcp: None,
+            plugins: PluginManager::new(),
+            show_plugins: false,
+            pending_clipboard: None,
         };
+        // Load plugins from the per-user config dir first (for installed
+        // binaries, e.g. `~/.config/reclass-rs/plugins`), then from a
+        // `plugins/` dir next to the binary (dev convenience).
+        let mut plugin_dirs = vec![settings::config_dir().join("plugins")];
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(dir) = exe.parent()
+        {
+            let adjacent = dir.join("plugins");
+            if !plugin_dirs.contains(&adjacent) {
+                plugin_dirs.push(adjacent);
+            }
+        }
+        for dir in plugin_dirs {
+            app.plugins.load_dir(&dir);
+        }
         if let Some(pid) = initial_pid {
             app.apply(Action::AttachPid(pid));
         }
@@ -420,7 +452,133 @@ impl ReClassApp {
                 }
                 Err(e) => self.error = Some(format!("generate project: {e}")),
             },
+            Action::PluginContextMenu {
+                plugin,
+                id,
+                class,
+                idx,
+            } => {
+                let acts = self
+                    .plugins
+                    .on_context_menu(plugin, &id, class, idx, &self.state);
+                for pa in acts {
+                    self.apply_plugin_action(pa);
+                }
+            }
         }
+    }
+
+    /// Translate a plugin's [`PluginAction`] into a host mutation.
+    fn apply_plugin_action(&mut self, action: PluginAction) {
+        match action {
+            PluginAction::AddClass { name } => {
+                self.state.add_class(name);
+            }
+            PluginAction::PushNode { class, kind, name } => {
+                let r = self.state.push_node(class, Node::new(name, kind));
+                self.report(r);
+            }
+            PluginAction::InsertNode {
+                class,
+                after_idx,
+                kind,
+                name,
+            } => {
+                let r = self
+                    .state
+                    .insert_after(class, after_idx, Node::new(name, kind));
+                self.report(r);
+            }
+            PluginAction::RemoveNode { class, idx } => {
+                let r = self.state.delete_node(class, idx);
+                self.report(r);
+            }
+            PluginAction::SetKind { class, idx, kind } => {
+                let r = self.state.change_kind(class, idx, kind);
+                self.report(r);
+            }
+            PluginAction::SetArrayCount { class, idx, count } => {
+                let r = self.state.set_array_count(class, idx, count);
+                self.report(r);
+            }
+            PluginAction::RenameNode { class, idx, name } => {
+                let r = self.state.rename_node(class, idx, name);
+                self.report(r);
+            }
+            PluginAction::SetComment {
+                class,
+                idx,
+                comment,
+            } => {
+                let r = self.state.set_comment(class, idx, comment);
+                self.report(r);
+            }
+            PluginAction::SetAddressExpr { class, expr } => {
+                let r = self.state.set_address_expr(class, expr);
+                self.report(r);
+            }
+            PluginAction::WriteValue { addr, kind, text } => {
+                let r = self.state.write_value(addr, &kind, &text);
+                self.report(r);
+            }
+            PluginAction::AttachPid(pid) => self.apply(Action::AttachPid(pid)),
+            PluginAction::SaveProject { path } => self.apply(Action::Save(path)),
+            PluginAction::LoadProject { path } => self.apply(Action::Load(path)),
+            PluginAction::SetClipboard(text) => self.pending_clipboard = Some(text),
+        }
+    }
+
+    /// Record an edit error on the status surface.
+    fn report(&mut self, r: Result<(), crate::app_state::AppError>) {
+        if let Err(e) = r {
+            self.error = Some(e.to_string());
+        }
+    }
+
+    /// Plugin manager window: enable/disable, open windows, reload, show errors.
+    fn plugins_window(&mut self, ctx: &egui::Context) {
+        if !self.show_plugins {
+            return;
+        }
+        let mut open = self.show_plugins;
+        let infos = self.plugins.infos();
+        egui::Window::new("Plugins")
+            .open(&mut open)
+            .resizable(true)
+            .show(ctx, |ui| {
+                if infos.is_empty() {
+                    ui.label("No plugins found. Drop .so/.dylib files into:");
+                    ui.label("  • ~/.config/reclass-rs/plugins  (or $XDG_CONFIG_HOME)");
+                    ui.label("  • a 'plugins/' directory next to the binary");
+                    return;
+                }
+                for info in &infos {
+                    ui.horizontal(|ui| {
+                        let mut enabled = info.enabled;
+                        if ui.checkbox(&mut enabled, "").changed() {
+                            self.plugins.set_enabled(info.idx, enabled);
+                        }
+                        let (maj, min) = info.version;
+                        ui.label(format!("{}  v{maj}.{min}", info.name));
+                        if info.has_window {
+                            let mut win = info.window_open;
+                            if ui.checkbox(&mut win, "window").changed() {
+                                self.plugins.set_window_open(info.idx, win);
+                            }
+                        }
+                        if ui.button("Reload").clicked()
+                            && let Err(e) = self.plugins.reload(info.idx)
+                        {
+                            self.error = Some(e.to_string());
+                        }
+                    });
+                    if let Some(err) = &info.error {
+                        ui.colored_label(egui::Color32::RED, err);
+                    }
+                    ui.separator();
+                }
+            });
+        self.show_plugins = open;
     }
 
     fn clear_selection(&mut self) {
@@ -556,6 +714,8 @@ impl eframe::App for ReClassApp {
         self.drain_mcp();
 
         let rows = self.state.compute_rows();
+        // HOOK 1 — post-snapshot: plugins observe rows, may enqueue mutations.
+        let mut plugin_actions = self.plugins.on_snapshot(&rows, &self.state);
         // value-change flash tracking (fades over FlashTracker::FADE seconds)
         self.now = self.app_start.elapsed().as_secs_f64();
         self.flash.fade = self.settings.flash_secs as f64;
@@ -584,9 +744,19 @@ impl eframe::App for ReClassApp {
         self.file_dialog_window(&ctx, &mut actions);
         self.settings_window(&ctx);
         self.kernel_unavailable_window(&ctx);
+        self.plugins.show_windows(&ctx, &self.state);
+        self.plugins_window(&ctx);
 
         for a in actions {
             self.apply(a);
+        }
+        // HOOK 2 — pre-apply: plugins inject final mutations into the batch.
+        plugin_actions.extend(self.plugins.on_pre_apply(&self.state));
+        for pa in plugin_actions {
+            self.apply_plugin_action(pa);
+        }
+        if let Some(text) = self.pending_clipboard.take() {
+            ctx.copy_text(text);
         }
     }
 }

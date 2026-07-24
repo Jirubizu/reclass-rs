@@ -5,8 +5,8 @@ use reclass_core::backend::Region;
 use reclass_core::codegen::{Language, generate, generate_project};
 use reclass_core::project::{Project, ProjectError, View};
 use reclass_core::{
-    AddrExpr, AddrInfo, ClassId, EditErr, Engine, ExpandState, IntWidth, MemError, MemoryBackend,
-    Node, NodeKind, PathSeg, RegistryError, Root, Row,
+    AddrExpr, AddrInfo, ClassId, ClassRegistry, EditErr, Engine, ExpandState, IntWidth, MemError,
+    MemoryBackend, Node, NodeKind, PathSeg, RegistryError, Root, Row,
 };
 use std::collections::HashMap;
 
@@ -201,6 +201,28 @@ impl AppState {
             Some(b) => b.regions().unwrap_or_default(),
             None => Vec::new(),
         };
+    }
+
+    /// The attached memory backend, if any. `&dyn` (not a generic) because the
+    /// backend is type-erased at runtime (`VmemBackend`/`MockBackend`); there is
+    /// no concrete type to monomorphize over. For read-only plugin access.
+    pub fn backend(&self) -> Option<&dyn MemoryBackend> {
+        self.backend.as_deref()
+    }
+
+    /// The target's mapped regions (as of the last [`refresh_regions`](Self::refresh_regions)).
+    pub fn regions(&self) -> &[Region] {
+        &self.regions
+    }
+
+    /// The class registry (read-only), for plugins inspecting structure.
+    pub fn registry(&self) -> &ClassRegistry {
+        &self.project.registry
+    }
+
+    /// The class id shown by view/root `root`, if it exists.
+    pub fn view_class(&self, root: usize) -> Option<ClassId> {
+        self.project.views.get(root).map(|v| v.class_id)
     }
 
     // -- classes / views ---------------------------------------------------

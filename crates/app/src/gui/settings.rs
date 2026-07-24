@@ -8,7 +8,7 @@ pub(super) const MAX_RECENT: usize = 10;
 
 /// Per-user config directory: `$XDG_CONFIG_HOME/reclass-rs`, else
 /// `$HOME/.config/reclass-rs`, else `./.reclass-rs`.
-fn config_dir() -> std::path::PathBuf {
+pub(super) fn config_dir() -> std::path::PathBuf {
     if let Some(x) = std::env::var_os("XDG_CONFIG_HOME") {
         return std::path::PathBuf::from(x).join("reclass-rs");
     }

@@ -45,20 +45,19 @@ fn emit_c_struct(reg: &ClassRegistry, class: &Class, out: &mut String) {
             &c_ident(&sanitize(&node.name, || format!("field_{off:x}"))),
             &mut used,
         );
-        let (decl, comment) = c_field(reg, &field, &node.kind);
+        let decl = c_field(reg, &field, &node.kind);
         let trailing = if node.comment.is_empty() {
-            format!(" // 0x{off:X}{comment}")
+            format!(" // 0x{off:X}")
         } else {
-            format!(" // 0x{off:X}{comment}  {}", node.comment)
+            format!(" // 0x{off:X}  {}", node.comment)
         };
         let _ = writeln!(out, "    {decl};{trailing}");
     }
     let _ = writeln!(out, "}}; // size = 0x{:X}", reg.size_of(class.id));
 }
 
-/// Returns the field declaration (e.g. `int32_t hp` or `float pos[3]`) plus an
-/// optional comment fragment.
-fn c_field(reg: &ClassRegistry, field: &str, kind: &NodeKind) -> (String, String) {
+/// The field declaration, e.g. `int32_t hp` or `float pos[3]`.
+fn c_field(reg: &ClassRegistry, field: &str, kind: &NodeKind) -> String {
     let int_ty = |w: IntWidth, signed: bool| {
         let bits = w.bits();
         if signed {
@@ -68,21 +67,19 @@ fn c_field(reg: &ClassRegistry, field: &str, kind: &NodeKind) -> (String, String
         }
     };
     match kind {
-        NodeKind::Hex(w) | NodeKind::UInt(w) => {
-            (format!("{} {field}", int_ty(*w, false)), String::new())
-        }
-        NodeKind::Int(w) => (format!("{} {field}", int_ty(*w, true)), String::new()),
-        NodeKind::Float32 => (format!("float {field}"), String::new()),
-        NodeKind::Float64 => (format!("double {field}"), String::new()),
-        NodeKind::Bool => (format!("uint8_t {field}"), String::new()),
-        NodeKind::Vec2 => (format!("float {field}[2]"), String::new()),
-        NodeKind::Vec3 => (format!("float {field}[3]"), String::new()),
-        NodeKind::Vec4 => (format!("float {field}[4]"), String::new()),
+        NodeKind::Hex(w) | NodeKind::UInt(w) => format!("{} {field}", int_ty(*w, false)),
+        NodeKind::Int(w) => format!("{} {field}", int_ty(*w, true)),
+        NodeKind::Float32 => format!("float {field}"),
+        NodeKind::Float64 => format!("double {field}"),
+        NodeKind::Bool => format!("uint8_t {field}"),
+        NodeKind::Vec2 => format!("float {field}[2]"),
+        NodeKind::Vec3 => format!("float {field}[3]"),
+        NodeKind::Vec4 => format!("float {field}[4]"),
         NodeKind::Text { encoding, len } => match encoding {
-            TextEncoding::Utf8 => (format!("char {field}[{len}]"), String::new()),
-            TextEncoding::Utf16 => (format!("uint16_t {field}[{len}]"), String::new()),
+            TextEncoding::Utf8 => format!("char {field}[{len}]"),
+            TextEncoding::Utf16 => format!("uint16_t {field}[{len}]"),
         },
-        NodeKind::Pointer | NodeKind::FunctionPtr => (format!("void* {field}"), String::new()),
+        NodeKind::Pointer | NodeKind::FunctionPtr => format!("void* {field}"),
         NodeKind::Array { element, count } => {
             // Append this dimension to the *declarator* before recursing, so
             // nested arrays read outside-in (`grid[5][3]` = 5 rows of 3) the
@@ -90,16 +87,12 @@ fn c_field(reg: &ClassRegistry, field: &str, kind: &NodeKind) -> (String, String
             // `grid[3][5]` — same total size, transposed indexing.
             c_field(reg, &format!("{field}[{count}]"), element)
         }
-        NodeKind::ClassInstance { class_id } => (
-            format!("struct {} {field}", c_type_name(reg, *class_id)),
-            String::new(),
-        ),
-        NodeKind::ClassPtr { class_id } => (
-            format!("struct {}* {field}", c_type_name(reg, *class_id)),
-            String::new(),
-        ),
-        NodeKind::Padding(n) | NodeKind::Unknown(n) => {
-            (format!("uint8_t {field}[{n}]"), String::new())
+        NodeKind::ClassInstance { class_id } => {
+            format!("struct {} {field}", c_type_name(reg, *class_id))
         }
+        NodeKind::ClassPtr { class_id } => {
+            format!("struct {}* {field}", c_type_name(reg, *class_id))
+        }
+        NodeKind::Padding(n) | NodeKind::Unknown(n) => format!("uint8_t {field}[{n}]"),
     }
 }

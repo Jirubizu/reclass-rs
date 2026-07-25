@@ -40,15 +40,31 @@ pub enum PathSeg {
     Elem(usize),
 }
 
-/// Which expandable nodes (`ClassPtr`s) are currently followed. Keyed by
-/// `(root index, root-relative node path)`.
+/// Paths under one root. `Vec<PathSeg>: Borrow<[PathSeg]>`, so membership is a
+/// borrowed lookup — no key is built to ask a question.
+type PathSet = std::collections::HashSet<Vec<PathSeg>>;
+
+/// Which expandable nodes (`ClassPtr`s) are currently followed.
+///
+/// Keyed root-first rather than by a `(root, path)` tuple: a tuple key cannot
+/// be borrowed from `(usize, &[PathSeg])`, so every query had to `to_vec()`
+/// the path first. Both discovery and formatting ask per node per frame, so
+/// that was two heap allocations per row at 60 Hz.
 #[derive(Clone, Debug, Default)]
 pub struct ExpandState {
     /// Followed `ClassPtr`s (default collapsed; presence == expanded).
-    set: std::collections::HashSet<(usize, Vec<PathSeg>)>,
+    set: HashMap<usize, PathSet>,
     /// Collapsed aggregates — `Array`/`ClassInstance` (default expanded;
     /// presence == collapsed).
-    collapsed: std::collections::HashSet<(usize, Vec<PathSeg>)>,
+    collapsed: HashMap<usize, PathSet>,
+}
+
+/// Flip `path`'s membership in `map[root]`.
+fn toggle_in(map: &mut HashMap<usize, PathSet>, root: usize, path: Vec<PathSeg>) {
+    let paths = map.entry(root).or_default();
+    if !paths.remove(&path) {
+        paths.insert(path);
+    }
 }
 
 impl ExpandState {
@@ -60,58 +76,50 @@ impl ExpandState {
     /// Whether `path` under `root` is expanded.
     #[must_use]
     pub fn is_expanded(&self, root: usize, path: &[PathSeg]) -> bool {
-        self.set.contains(&(root, path.to_vec()))
+        self.set.get(&root).is_some_and(|p| p.contains(path))
     }
     /// Mark expanded.
     pub fn expand(&mut self, root: usize, path: Vec<PathSeg>) {
-        self.set.insert((root, path));
+        self.set.entry(root).or_default().insert(path);
     }
     /// Mark collapsed.
     pub fn collapse(&mut self, root: usize, path: &[PathSeg]) {
-        self.set.remove(&(root, path.to_vec()));
+        if let Some(p) = self.set.get_mut(&root) {
+            p.remove(path);
+        }
     }
     /// Flip expansion.
     pub fn toggle(&mut self, root: usize, path: Vec<PathSeg>) {
-        let key = (root, path);
-        if self.set.contains(&key) {
-            self.set.remove(&key);
-        } else {
-            self.set.insert(key);
-        }
+        toggle_in(&mut self.set, root, path);
     }
 
     /// Whether an aggregate (`Array`/`ClassInstance`) at `path` is collapsed
     /// (they default to expanded).
     #[must_use]
     pub fn is_collapsed(&self, root: usize, path: &[PathSeg]) -> bool {
-        self.collapsed.contains(&(root, path.to_vec()))
+        self.collapsed.get(&root).is_some_and(|p| p.contains(path))
     }
     /// Flip the collapsed state of an aggregate.
     pub fn toggle_collapse(&mut self, root: usize, path: Vec<PathSeg>) {
-        let key = (root, path);
-        if self.collapsed.contains(&key) {
-            self.collapsed.remove(&key);
-        } else {
-            self.collapsed.insert(key);
-        }
+        toggle_in(&mut self.collapsed, root, path);
     }
 
     /// Mark an aggregate collapsed (used by "collapse all").
     pub fn mark_collapsed(&mut self, root: usize, path: Vec<PathSeg>) {
-        self.collapsed.insert((root, path));
+        self.collapsed.entry(root).or_default().insert(path);
     }
     /// Remove every expand/collapse entry for a root (used by "expand all").
     pub fn clear_root(&mut self, root: usize) {
-        self.set.retain(|(r, _)| *r != root);
-        self.collapsed.retain(|(r, _)| *r != root);
+        self.set.remove(&root);
+        self.collapsed.remove(&root);
     }
 
     /// Drop every entry for view `idx` and shift higher view indices down by
     /// one, keeping expansion/collapse state aligned after a view is closed
     /// (state is keyed by view position).
     pub fn drop_root(&mut self, idx: usize) {
-        fn shift(set: &mut std::collections::HashSet<(usize, Vec<PathSeg>)>, idx: usize) {
-            *set = std::mem::take(set)
+        fn shift(map: &mut HashMap<usize, PathSet>, idx: usize) {
+            *map = std::mem::take(map)
                 .into_iter()
                 .filter_map(|(r, p)| match r.cmp(&idx) {
                     std::cmp::Ordering::Less => Some((r, p)),

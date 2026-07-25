@@ -11,6 +11,8 @@
 //! project). This module owns the [`Language`] dispatch and the naming/ordering
 //! helpers shared across all three.
 
+use std::collections::HashSet;
+
 use crate::class::{ClassId, ClassRegistry};
 use crate::node::NodeKind;
 
@@ -121,16 +123,52 @@ pub(super) fn class_type_name(reg: &ClassRegistry, id: ClassId) -> String {
     }
 }
 
-/// A class's Rust type name, keyword-escaped.
-pub(super) fn rust_type_name(reg: &ClassRegistry, id: ClassId) -> String {
-    rust_ident(&class_type_name(reg, id))
+/// Claim `base`, or the first free `base_2`, `base_3`, … if it is taken.
+///
+/// [`sanitize`] is lossy — `"a b"` and `"a-b"` both become `a_b` — so two
+/// distinct user names can land on one identifier and emit a struct with
+/// duplicate members, which does not compile in either language.
+fn unique(base: &str, used: &mut HashSet<String>) -> String {
+    let mut candidate = base.to_string();
+    let mut n = 1u32;
+    while !used.insert(candidate.clone()) {
+        n += 1;
+        candidate = format!("{base}_{n}");
+    }
+    candidate
 }
 
-/// A class's C/C++ type name, keyword-escaped. `struct` has its own namespace
-/// in C but keywords are still reserved there, so `struct int` is as invalid
-/// as a field named `int`.
+/// The deduplicated type name for `id` under `escape`.
+///
+/// Runs the same assignment every call: classes claim names in ascending id
+/// order, so a name depends only on the classes *before* it and every call
+/// site — definition, forward declaration, field type, pointee — agrees
+/// without threading a map through the emitters. Escaping happens before the
+/// uniqueness check, so an escaped keyword (`int` -> `int_`) cannot collide
+/// with a class literally named `int_`.
+fn type_name_with(reg: &ClassRegistry, id: ClassId, escape: fn(&str) -> String) -> String {
+    let mut used = HashSet::new();
+    for class in reg.iter() {
+        let base = escape(&class_type_name(reg, class.id));
+        let name = unique(&base, &mut used);
+        if class.id == id {
+            return name;
+        }
+    }
+    // Dangling id: not a class in the registry, so nothing claimed a name.
+    escape(&class_type_name(reg, id))
+}
+
+/// A class's Rust type name, keyword-escaped and deduplicated.
+pub(super) fn rust_type_name(reg: &ClassRegistry, id: ClassId) -> String {
+    type_name_with(reg, id, rust_ident)
+}
+
+/// A class's C/C++ type name, keyword-escaped and deduplicated. `struct` has
+/// its own namespace in C but keywords are still reserved there, so
+/// `struct int` is as invalid as a field named `int`.
 pub(super) fn c_type_name(reg: &ClassRegistry, id: ClassId) -> String {
-    c_ident(&class_type_name(reg, id))
+    type_name_with(reg, id, c_ident)
 }
 
 /// Order classes so that any class embedded by value (`ClassInstance`, possibly
@@ -270,6 +308,44 @@ mod tests {
         assert!(code.contains("struct class_;"), "{code}");
         assert!(code.contains("struct class_ {"), "{code}");
         assert!(code.contains("struct class_* next;"), "{code}");
+    }
+
+    #[test]
+    fn colliding_sanitized_names_are_deduplicated() {
+        // `sanitize` maps every illegal char to `_`, so distinct user names
+        // collapse onto one identifier and emitted a struct with two members
+        // of the same name — invalid in both languages.
+        let mut reg = ClassRegistry::new();
+        let a = reg.add_class("Player Data");
+        let _b = reg.add_class("Player-Data");
+        reg.push_node(a, Node::new("hit points", NodeKind::Int(IntWidth::W32)))
+            .unwrap();
+        reg.push_node(a, Node::new("hit/points", NodeKind::Int(IntWidth::W32)))
+            .unwrap();
+
+        let rs = generate(&reg, Language::Rust);
+        assert!(rs.contains("pub struct Player_Data {"), "{rs}");
+        assert!(rs.contains("pub struct Player_Data_2 {"), "{rs}");
+        assert!(rs.contains("pub hit_points: i32,"), "{rs}");
+        assert!(rs.contains("pub hit_points_2: i32,"), "{rs}");
+
+        let c = generate(&reg, Language::C);
+        assert!(c.contains("struct Player_Data {"), "{c}");
+        assert!(c.contains("struct Player_Data_2 {"), "{c}");
+        assert!(c.contains("int32_t hit_points;"), "{c}");
+        assert!(c.contains("int32_t hit_points_2;"), "{c}");
+    }
+
+    #[test]
+    fn escaped_keyword_cannot_collide_with_a_literal_underscore_name() {
+        // `int` escapes to `int_`; a class actually named `int_` must not end
+        // up with the same identifier. Dedup runs *after* escaping.
+        let mut reg = ClassRegistry::new();
+        let _int = reg.add_class("int");
+        let _int_ = reg.add_class("int_");
+        let c = generate(&reg, Language::C);
+        assert!(c.contains("struct int_ {"), "{c}");
+        assert!(c.contains("struct int__2 {"), "{c}");
     }
 
     #[test]

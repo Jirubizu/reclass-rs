@@ -1,7 +1,9 @@
 //! C and C++ struct emission: forward declarations, `#pragma pack(push, 1)`,
 //! definitions in inline-dependency order.
 
-use super::{Language, c_ident, c_type_name, sanitize, topo_order};
+use std::collections::HashSet;
+
+use super::{Language, c_ident, c_type_name, sanitize, topo_order, unique};
 use crate::class::{Class, ClassRegistry};
 use crate::node::{IntWidth, NodeKind, TextEncoding};
 
@@ -35,10 +37,14 @@ fn emit_c_struct(reg: &ClassRegistry, class: &Class, out: &mut String) {
     use std::fmt::Write;
     let name = c_type_name(reg, class.id);
     let offsets = reg.offsets(class.id);
+    let mut used = HashSet::new();
     let _ = writeln!(out, "struct {name} {{");
     for (i, node) in class.nodes.iter().enumerate() {
         let off = offsets.get(i).copied().unwrap_or(0);
-        let field = c_ident(&sanitize(&node.name, || format!("field_{off:x}")));
+        let field = unique(
+            &c_ident(&sanitize(&node.name, || format!("field_{off:x}"))),
+            &mut used,
+        );
         let (decl, comment) = c_field(reg, &field, &node.kind);
         let trailing = if node.comment.is_empty() {
             format!(" // 0x{off:X}{comment}")

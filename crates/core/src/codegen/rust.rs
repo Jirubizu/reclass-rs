@@ -1,6 +1,8 @@
 //! Plain Rust struct emission: one `#[repr(C, packed)]` layout struct per class.
 
-use super::{rust_ident, rust_type_name, sanitize};
+use std::collections::HashSet;
+
+use super::{rust_ident, rust_type_name, sanitize, unique};
 use crate::class::{Class, ClassRegistry};
 use crate::node::{NodeKind, TextEncoding};
 
@@ -21,11 +23,15 @@ pub(super) fn emit_rust_struct(reg: &ClassRegistry, class: &Class, out: &mut Str
     use std::fmt::Write;
     let name = rust_type_name(reg, class.id);
     let offsets = reg.offsets(class.id);
+    let mut used = HashSet::new();
     out.push_str("#[repr(C, packed)]\n");
     let _ = writeln!(out, "pub struct {name} {{");
     for (i, node) in class.nodes.iter().enumerate() {
         let off = offsets.get(i).copied().unwrap_or(0);
-        let field = rust_ident(&sanitize(&node.name, || format!("field_{off:x}")));
+        let field = unique(
+            &rust_ident(&sanitize(&node.name, || format!("field_{off:x}"))),
+            &mut used,
+        );
         let ty = rust_type(reg, &node.kind);
         if !node.comment.is_empty() {
             let _ = writeln!(out, "    // {}", node.comment);

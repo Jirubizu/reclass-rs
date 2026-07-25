@@ -209,6 +209,31 @@ mod tests {
     }
 
     #[test]
+    fn nested_c_array_dimensions_are_outside_in() {
+        // 5 rows of 3 u32 must emit `[5][3]`, matching Rust's `[[u32; 3]; 5]`.
+        // The two backends used to disagree: C emitted `[3][5]` — same total
+        // size, transposed indexing.
+        let mut reg = ClassRegistry::new();
+        let c = reg.add_class("Grid");
+        reg.push_node(
+            c,
+            Node::new(
+                "grid",
+                NodeKind::Array {
+                    element: Box::new(NodeKind::Array {
+                        element: Box::new(NodeKind::UInt(IntWidth::W32)),
+                        count: 3,
+                    }),
+                    count: 5,
+                },
+            ),
+        )
+        .unwrap();
+        assert!(generate(&reg, Language::C).contains("uint32_t grid[5][3];"));
+        assert!(generate(&reg, Language::Rust).contains("pub grid: [[u32; 3]; 5],"));
+    }
+
+    #[test]
     fn cpp_uses_cstdint() {
         let (reg, _) = registry();
         let code = generate(&reg, Language::Cpp);

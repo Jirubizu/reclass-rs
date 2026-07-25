@@ -78,9 +78,11 @@ fn c_field(reg: &ClassRegistry, field: &str, kind: &NodeKind) -> (String, String
         },
         NodeKind::Pointer | NodeKind::FunctionPtr => (format!("void* {field}"), String::new()),
         NodeKind::Array { element, count } => {
-            // arrays of pointers / scalars: emit element type + [count]
-            let (inner_decl, _) = c_field(reg, field, element);
-            (format!("{inner_decl}[{count}]"), String::new())
+            // Append this dimension to the *declarator* before recursing, so
+            // nested arrays read outside-in (`grid[5][3]` = 5 rows of 3) the
+            // way C indexes them. Appending after the recursion emitted
+            // `grid[3][5]` — same total size, transposed indexing.
+            c_field(reg, &format!("{field}[{count}]"), element)
         }
         NodeKind::ClassInstance { class_id } => (
             format!("struct {} {field}", class_type_name(reg, *class_id)),

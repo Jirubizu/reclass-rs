@@ -36,11 +36,11 @@ impl HostPlugin for AutoAttach {
         self.throttle = 0;
 
         // Scan /proc for a matching comm name (Linux-specific).
-        if let Some(pid) = find_by_comm(&self.target) {
-            if self.last_seen_pid != Some(pid) {
-                self.last_seen_pid = Some(pid);
-                return vec![PluginAction::AttachPid(pid)];
-            }
+        if let Some(pid) = find_by_comm(&self.target)
+            && self.last_seen_pid != Some(pid)
+        {
+            self.last_seen_pid = Some(pid);
+            return vec![PluginAction::AttachPid(pid)];
         }
         Vec::new()
     }

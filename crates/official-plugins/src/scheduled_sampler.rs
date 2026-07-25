@@ -30,7 +30,7 @@ impl HostPlugin for ScheduledSampler {
             return Vec::new();
         }
         self.tick = self.tick.wrapping_add(1);
-        if self.tick % self.interval != 0 {
+        if !self.tick.is_multiple_of(self.interval) {
             return Vec::new();
         }
         let ts = SystemTime::now()

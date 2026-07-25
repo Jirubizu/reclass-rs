@@ -118,7 +118,7 @@ impl HostPlugin for CopyAs {
             "copy_py" => {
                 format!(
                     "# offset 0x{offset:02X} — read as {ty}\n{name}",
-                    name = (&node.name).replace(' ', "_"),
+                    name = node.name.replace(' ', "_"),
                     ty = py_type(&node.kind),
                 )
             }

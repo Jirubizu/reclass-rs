@@ -171,6 +171,15 @@ pub(super) fn c_type_name(reg: &ClassRegistry, id: ClassId) -> String {
     type_name_with(reg, id, c_ident)
 }
 
+/// A class's generated `…View` accessor type name.
+///
+/// Deduplicated but *not* keyword-escaped: the `View` suffix already makes the
+/// identifier a non-keyword, and escaping first would produce `r#moveView`,
+/// which is not valid Rust.
+pub(super) fn rust_view_name(reg: &ClassRegistry, id: ClassId) -> String {
+    format!("{}View", type_name_with(reg, id, str::to_string))
+}
+
 /// Order classes so that any class embedded by value (`ClassInstance`, possibly
 /// through arrays) appears before the class that embeds it. Falls back to id
 /// order on a cycle (which `validate` would already reject).
@@ -453,6 +462,36 @@ mod tests {
         // large byte buffer via read_bytes, no Pod bound
         assert!(code.contains("pub fn name(&self) -> Result<[u8; 260], Error> {"));
         assert!(!code.contains("read::<"));
+    }
+
+    #[test]
+    fn project_view_names_are_valid_and_unique() {
+        // The `View` accessor name was built from `class_type_name` in the
+        // definition but from the keyword-escaped `rust_type_name` at one call
+        // site, so a class named `move` declared `moveView` and referenced
+        // `r#moveView`. And because view names skipped dedup entirely, two
+        // classes that sanitize alike defined the same view struct twice.
+        let mut reg = ClassRegistry::new();
+        let kw = reg.add_class("move");
+        reg.push_node(kw, Node::new("a", NodeKind::Int(IntWidth::W32)))
+            .unwrap();
+        let a = reg.add_class("Player Data");
+        reg.push_node(a, Node::new("b", NodeKind::Int(IntWidth::W32)))
+            .unwrap();
+        let b = reg.add_class("Player-Data");
+        reg.push_node(b, Node::new("c", NodeKind::ClassPtr { class_id: a }))
+            .unwrap();
+
+        let code = &generate_project(&reg, "views", None)[1].1;
+        assert!(!code.contains("r#moveView"), "{code}");
+        assert!(code.contains("pub struct moveView<'a>"), "{code}");
+        assert!(code.contains("pub struct Player_DataView<'a>"), "{code}");
+        assert!(code.contains("pub struct Player_Data_2View<'a>"), "{code}");
+        // the ClassPtr accessor in the second class must name the first's view
+        assert!(
+            code.contains("pub fn c(&self) -> Result<Player_DataView<'a>, Error> {"),
+            "{code}"
+        );
     }
 
     #[test]

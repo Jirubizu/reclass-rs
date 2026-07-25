@@ -3,7 +3,7 @@
 //! typed get/set methods per field, and an attach/sample hook in `main.rs`.
 
 use super::rust::emit_rust_struct;
-use super::{class_type_name, rust_ident, rust_type_name, sanitize};
+use super::{class_type_name, rust_ident, rust_view_name, sanitize, unique};
 use crate::class::{Class, ClassId, ClassRegistry};
 use crate::expr::{AddrExpr, BinOp};
 use crate::node::NodeKind;
@@ -105,7 +105,7 @@ fn main_hook(reg: &ClassRegistry, attach: &str) -> String {
             "    // Set one in reclass (click the address bar) and regenerate."
         );
         if let Some(first) = reg.iter().next() {
-            let view = format!("{}View", class_type_name(reg, first.id));
+            let view = rust_view_name(reg, first.id);
             let _ = writeln!(out, "    let base: usize = 0;");
             let _ = writeln!(out, "    let _view = {view}::new(&proc, base);");
         }
@@ -148,10 +148,17 @@ fn main_hook(reg: &ClassRegistry, attach: &str) -> String {
                 .unwrap_or_else(|| format!("0_u64 /* unknown module '{name}' */"))
         };
         let mut vars: Vec<String> = Vec::new();
+        // Lowercasing collapses `Player` and `player` onto one binding; the
+        // second `let` would shadow the first and both borrows below would
+        // point at the same view.
+        let mut used_vars: HashSet<String> = HashSet::new();
         for entry in &entries {
-            let view = format!("{}View", rust_type_name(reg, entry.class_id));
+            let view = rust_view_name(reg, entry.class_id);
             let body = render_expr(&entry.expr, "proc", &mod_var);
-            let var = rust_ident(&class_type_name(reg, entry.class_id).to_ascii_lowercase());
+            let var = unique(
+                &rust_ident(&class_type_name(reg, entry.class_id).to_ascii_lowercase()),
+                &mut used_vars,
+            );
             let _ = writeln!(out, "    let {var} = {view}::new(&proc, {body} as usize);");
             vars.push(var);
         }
@@ -244,7 +251,7 @@ fn generate_bindings(reg: &ClassRegistry) -> String {
 fn emit_view(reg: &ClassRegistry, class: &Class, out: &mut String) {
     use std::fmt::Write;
     let name = class_type_name(reg, class.id);
-    let view = format!("{name}View");
+    let view = rust_view_name(reg, class.id);
     let total = reg.size_of(class.id);
     let _ = writeln!(out, "/// Live accessor for `{name}` in a target process.");
     out.push_str("#[derive(Clone, Copy)]\n");
@@ -311,7 +318,7 @@ fn emit_accessor(
         }
         NodeKind::ClassInstance { class_id } => {
             if reg.get(*class_id).is_some() {
-                let tv = format!("{}View", class_type_name(reg, *class_id));
+                let tv = rust_view_name(reg, *class_id);
                 let _ = writeln!(out, "    /// inline `{field}` @ 0x{off:X}");
                 let _ = writeln!(out, "    pub fn {get}(&self) -> {tv}<'a> {{");
                 let _ = writeln!(out, "        {tv}::new(self.proc, self.base + 0x{off:X})");
@@ -335,7 +342,7 @@ fn emit_accessor(
             };
             emit_scalar(out, &ptr_acc, "usize", 8);
             if reg.get(*class_id).is_some() {
-                let tv = format!("{}View", class_type_name(reg, *class_id));
+                let tv = rust_view_name(reg, *class_id);
                 let _ = writeln!(out, "    /// follow `{field}` to its target");
                 let _ = writeln!(out, "    pub fn {get}(&self) -> Result<{tv}<'a>, Error> {{");
                 let _ = writeln!(out, "        Ok({tv}::new(self.proc, self.{get_ptr}()?))");

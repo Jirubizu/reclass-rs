@@ -67,6 +67,18 @@ pub enum RegistryError {
         /// Node index.
         idx: usize,
     },
+    /// A node references a class id that is not in the registry. The engine
+    /// would size it as 0 and codegen would emit an undefined type, both
+    /// silently.
+    #[error("class #{class} node {idx} references unknown class #{target}")]
+    DanglingRef {
+        /// The class holding the reference.
+        class: ClassId,
+        /// Node index within it.
+        idx: usize,
+        /// The missing class id.
+        target: ClassId,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -116,13 +128,24 @@ impl ClassRegistry {
         self.invalidate();
     }
 
-    /// Remove a class (does not touch references to it from other classes).
+    /// Remove a class, rewriting every reference to it so the registry never
+    /// holds a dangling id.
+    ///
+    /// Layout is preserved: a `ClassPtr` and a plain `Pointer` are both 8
+    /// bytes, and an inline `ClassInstance` becomes `Unknown` of the same
+    /// size. Leaving the references behind meant the engine sized them as 0
+    /// and codegen emitted an undefined type — both silently.
     pub fn remove_class(&mut self, id: ClassId) -> Option<Class> {
-        let removed = self.classes.remove(&id);
-        if removed.is_some() {
-            self.invalidate();
+        // Measure before removing; afterwards the size is unknowable.
+        let orphan_size = self.size_of(id);
+        let removed = self.classes.remove(&id)?;
+        for class in self.classes.values_mut() {
+            for node in &mut class.nodes {
+                drop_class_ref(&mut node.kind, id, orphan_size);
+            }
         }
-        removed
+        self.invalidate();
+        Some(removed)
     }
 
     /// Borrow a class.
@@ -438,9 +461,25 @@ impl ClassRegistry {
 
     // -- validation --------------------------------------------------------
 
-    /// Reject inline `ClassInstance` cycles. `ClassPtr` cycles are fine (a read
-    /// boundary, not inline layout).
+    /// Reject dangling class references and inline `ClassInstance` cycles.
+    /// `ClassPtr` cycles are fine (a read boundary, not inline layout).
     pub fn validate(&self) -> Result<(), RegistryError> {
+        // Dangling first: a missing class is more fundamental than a cycle,
+        // and the cycle walk would silently skip the unknown id anyway.
+        for class in self.classes.values() {
+            for (idx, node) in class.nodes.iter().enumerate() {
+                if let Some(target) = referenced_class(&node.kind)
+                    && !self.classes.contains_key(&target)
+                {
+                    return Err(RegistryError::DanglingRef {
+                        class: class.id,
+                        idx,
+                        target,
+                    });
+                }
+            }
+        }
+
         #[derive(Clone, Copy, PartialEq)]
         enum State {
             Visiting,
@@ -532,6 +571,29 @@ fn inline_class(kind: &NodeKind) -> Option<ClassId> {
         NodeKind::ClassInstance { class_id } => Some(*class_id),
         NodeKind::Array { element, .. } => inline_class(element),
         _ => None,
+    }
+}
+
+/// The class id a kind refers to at all — inline *or* through a pointer
+/// (unlike [`inline_class`], which only reports by-value nesting).
+fn referenced_class(kind: &NodeKind) -> Option<ClassId> {
+    match kind {
+        NodeKind::ClassInstance { class_id } | NodeKind::ClassPtr { class_id } => Some(*class_id),
+        NodeKind::Array { element, .. } => referenced_class(element),
+        _ => None,
+    }
+}
+
+/// Rewrite a reference to the now-removed class `gone` into an equally-sized
+/// kind that refers to nothing.
+fn drop_class_ref(kind: &mut NodeKind, gone: ClassId, size: usize) {
+    match kind {
+        NodeKind::ClassPtr { class_id } if *class_id == gone => *kind = NodeKind::Pointer,
+        NodeKind::ClassInstance { class_id } if *class_id == gone => {
+            *kind = NodeKind::Unknown(size);
+        }
+        NodeKind::Array { element, .. } => drop_class_ref(element, gone, size),
+        _ => {}
     }
 }
 
@@ -693,6 +755,75 @@ mod tests {
         // validation rejects it
         assert!(matches!(reg.validate(), Err(RegistryError::Cycle(_))));
         assert!(reg.would_cycle(a, a));
+    }
+
+    #[test]
+    fn removing_a_class_rewrites_references_preserving_layout() {
+        let mut reg = ClassRegistry::new();
+        let inner = reg.add_class("Inner");
+        reg.push_node(inner, Node::new("x", NodeKind::Int(IntWidth::W64)))
+            .unwrap();
+        reg.push_node(inner, Node::new("y", h32())).unwrap(); // Inner = 12
+        let outer = reg.add_class("Outer");
+        reg.push_node(
+            outer,
+            Node::new("inst", NodeKind::ClassInstance { class_id: inner }),
+        )
+        .unwrap();
+        reg.push_node(
+            outer,
+            Node::new("ptr", NodeKind::ClassPtr { class_id: inner }),
+        )
+        .unwrap();
+        reg.push_node(
+            outer,
+            Node::new(
+                "arr",
+                NodeKind::Array {
+                    element: Box::new(NodeKind::ClassPtr { class_id: inner }),
+                    count: 2,
+                },
+            ),
+        )
+        .unwrap();
+        let before = reg.size_of(outer); // 12 + 8 + 16
+        assert_eq!(before, 36);
+
+        reg.remove_class(inner).unwrap();
+
+        // No reference survives, and the layout is byte-identical.
+        assert_eq!(reg.validate(), Ok(()));
+        assert_eq!(reg.size_of(outer), before);
+        let nodes = &reg.get(outer).unwrap().nodes;
+        assert_eq!(nodes[0].kind, NodeKind::Unknown(12));
+        assert_eq!(nodes[1].kind, NodeKind::Pointer);
+        assert_eq!(
+            nodes[2].kind,
+            NodeKind::Array {
+                element: Box::new(NodeKind::Pointer),
+                count: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_dangling_class_reference() {
+        // Only reachable by hand-editing a project file now that
+        // `remove_class` rewrites references, but that is exactly the case
+        // where a precise error beats a silently-zero-sized field.
+        let mut reg = ClassRegistry::new();
+        let a = reg.add_class("A");
+        reg.push_node(a, Node::new("pad", h32())).unwrap();
+        reg.push_node(a, Node::new("ghost", NodeKind::ClassPtr { class_id: 99 }))
+            .unwrap();
+        assert_eq!(
+            reg.validate(),
+            Err(RegistryError::DanglingRef {
+                class: a,
+                idx: 1,
+                target: 99,
+            })
+        );
     }
 
     #[test]

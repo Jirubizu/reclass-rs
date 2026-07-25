@@ -112,6 +112,23 @@ fn drives_reclass_over_http() {
     );
     assert_eq!(err["error"]["code"], -32601);
 
+    // Oversized body is refused instead of being read into memory. The socket
+    // is loopback-only, but any local process can reach it, so an unbounded
+    // `read_to_string` was a free OOM.
+    let fat = format!(
+        r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"write_memory","arguments":{{"address":0,"hex":"{}"}}}}}}"#,
+        "41".repeat(2 << 20)
+    );
+    let too_big = rpc(port, &fat);
+    assert_eq!(too_big["error"]["code"], -32600);
+    assert!(
+        too_big["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("exceeds"),
+        "{too_big}"
+    );
+
     stop.store(true, Ordering::SeqCst);
     drainer.join().unwrap();
 }

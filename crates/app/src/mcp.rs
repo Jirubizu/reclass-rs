@@ -18,6 +18,7 @@
 //! it via [`dispatch`] and replies. That is exactly why MCP writes show up
 //! live: the GUI mutates its own state and repaints on the next tick.
 
+use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
@@ -37,6 +38,10 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(100);
 /// Hard cap on a single `read_memory` request.
 const MAX_READ: usize = 1 << 20;
+/// Hard cap on a request body. Bounds every byte-carrying argument at the
+/// ingress — notably `write_memory`'s `hex`/`bytes`, which are otherwise
+/// unlimited — instead of re-checking a length in each handler.
+const MAX_BODY: u64 = 2 << 20;
 
 // ---------------------------------------------------------------------------
 // GUI-facing handle
@@ -136,12 +141,26 @@ fn serve(server: tiny_http::Server, tx: &Sender<Call>, wake: &impl Fn(), shutdow
             let _ = req.respond(text_response(405, "POST JSON-RPC to this endpoint"));
             continue;
         }
+        // `take` before `read_to_string`: the body is attacker-sized, and any
+        // local process can reach the loopback socket. Read one byte past the
+        // cap so a body sitting exactly on it is not mistaken for an overflow.
         let mut body = String::new();
-        if req.as_reader().read_to_string(&mut body).is_err() {
+        // UFCS: `as_reader()` hands back `&mut dyn Read`, and `take` needs a
+        // `Sized` receiver — `&mut dyn Read` is, `dyn Read` is not.
+        let mut limited = Read::take(req.as_reader(), MAX_BODY + 1);
+        if limited.read_to_string(&mut body).is_err() {
             let _ = req.respond(json_response(&rpc_error(
                 Value::Null,
                 -32700,
                 "body not UTF-8",
+            )));
+            continue;
+        }
+        if body.len() as u64 > MAX_BODY {
+            let _ = req.respond(json_response(&rpc_error(
+                Value::Null,
+                -32600,
+                &format!("request body exceeds {MAX_BODY} bytes"),
             )));
             continue;
         }

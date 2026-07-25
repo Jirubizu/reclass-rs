@@ -249,6 +249,16 @@ impl Engine {
     /// Default array-expansion cap when none is configured.
     const DEFAULT_ARRAY_LIMIT: usize = 256;
 
+    /// Hard cap on the bytes read for one class buffer.
+    ///
+    /// `array_limit` bounds how many array elements are *rendered*, but the
+    /// frame buffer was sized from the full [`ClassRegistry::size_of`], so one
+    /// mistyped array count (`u32[200_000_000]`) allocated and scanned 800 MB
+    /// per tick to render 258 rows. Past this cap a node's slice is absent, so
+    /// the existing unreadable path renders `???` — the same degradation as a
+    /// class overrunning its mapped region.
+    const MAX_CLASS_BYTES: usize = 1 << 20;
+
     /// A fresh engine with a default array-expansion cap of 256 elements.
     #[must_use]
     pub fn new() -> Self {
@@ -399,9 +409,10 @@ impl Engine {
         if wave.is_empty() {
             return;
         }
-        // size each frame's buffer
+        // size each frame's buffer, capped so an absurd class size cannot turn
+        // one tick into a multi-hundred-megabyte allocation and scan
         for &fi in wave {
-            let sz = reg.size_of(frames[fi].class_id);
+            let sz = reg.size_of(frames[fi].class_id).min(Self::MAX_CLASS_BYTES);
             frames[fi].buf.resize(sz, 0);
         }
         // collect indices that actually need a read (non-empty)
@@ -1105,5 +1116,45 @@ mod tests {
         // close view 0: the remaining entry shifts down to 0
         e.drop_root(0);
         assert!(e.is_expanded(0, &p));
+    }
+
+    #[test]
+    fn absurd_class_size_does_not_blow_up_the_read() {
+        // A mistyped array count used to size the frame buffer to the full
+        // 800 MB: one allocate+zero per tick, then `read_partial` walking it in
+        // 256-byte chunks (~3.1M backend calls) to render 258 rows.
+        let mut reg = ClassRegistry::new();
+        let c = reg.add_class("Huge");
+        reg.push_node(
+            c,
+            Node::new(
+                "arr",
+                NodeKind::Array {
+                    element: Box::new(h32()),
+                    count: 200_000_000,
+                },
+            ),
+        )
+        .unwrap();
+        assert_eq!(reg.size_of(c), 800_000_000);
+
+        let be = MockBackend::new();
+        let mut eng = Engine::new();
+        let rows = eng.snapshot(
+            &be,
+            &reg,
+            &[Root {
+                class_id: c,
+                base: 0x1000,
+            }],
+            &ExpandState::new(),
+            None,
+        );
+
+        // Rows are still produced, bounded by the array limit.
+        assert_eq!(rows.len(), 2 + eng.array_limit());
+        // Nothing is mapped, so the read fails and falls back to the partial
+        // scan — which is now bounded by the 1 MiB cap, not the class size.
+        assert!(be.read_calls() < 1 + (1 << 20) / 256 + 256);
     }
 }

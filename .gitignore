@@ -3,3 +3,7 @@
 /examples/playground/playground
 /.codegraph
 /banks
+
+# A global core.excludesFile with a `docs/` rule would otherwise silently
+# drop this repo's docs — README links them, and its header image lives there.
+!/docs/

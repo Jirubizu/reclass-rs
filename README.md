@@ -13,7 +13,7 @@ You define a *class* as an ordered list of typed *fields*; reclass-rs resolves a
 
 ## Highlights
 
-- **Live, batched reads.** The render loop gathers every visible address and issues **one** scatter read per pointer-chain level (`process_vm_readv`) — never one syscall per field. Partial reads are tolerated, so a class that overruns its mapping still shows the mapped prefix.
+- **Live, batched reads.** The render loop gathers every visible address and issues **one** scatter read per pointer-chain level (`process_vm_readv`) — never one syscall per field. Partial reads are tolerated, so a class that overruns its mapping still shows the mapped prefix. Each class reads at most 1 MiB per tick; past that a field shows `???` rather than letting one mistyped array count stall the UI.
 - **Full ReClass-style node set:** `Hex8/16/32/64`, signed/unsigned ints, `Float`, `Double`, `Bool`, `Vec2/3/4`, `Text`/`WText`, `Pointer`, `FunctionPtr`, `Array[N]`, inline `ClassInstance`, `ClassPtr`, `Padding`, `Unknown`, plus assembly size keywords (`byte/word/dword/qword/tword/oword/yword/zword`).
 - **Derived offsets** that recompute and re-cache on every structural edit; inline `ClassInstance` cycles are detected and rejected (`ClassPtr` cycles are fine — they're a read boundary).
 - **Address expressions:** `<module.so> + 0x10`, `[0xADDR]`, `[<module> + 0x10] + 0x20`, with `+ - * /`.
@@ -67,10 +67,12 @@ pub trait MemoryBackend {
 ```
 reclass-rs/
   crates/
-    core/            # reclass-core — no UI, no vmem dep; nodes, classes, expr, engine, codegen, project
-    backend-vmem/    # reclass-backend-vmem — MemoryBackend over the `vmem` crate (+ smoke CLI, access tracker)
-    app/             # reclass — egui (default) + ratatui (--tui) front-ends
-  docs/vmem-api.md   # vmem capability → API mapping
+    core/              # reclass-core — no UI, no vmem dep; nodes, classes, expr, engine, codegen, project
+    backend-vmem/      # reclass-backend-vmem — MemoryBackend over the `vmem` crate (+ smoke CLI, access tracker)
+    app/               # reclass — egui (default) + ratatui (--tui) front-ends, MCP server, plugin host
+    official-plugins/  # reclass-official-plugins — the bundled plugins, one cdylib
+    example-plugin/    # reclass-example-plugin — reference plugin, the API by example
+  docs/vmem-api.md     # vmem capability → API mapping
 ```
 
 ---
@@ -78,10 +80,12 @@ reclass-rs/
 ## Prerequisites
 
 - **Rust** (stable, edition 2024) — `rustup` recommended.
-- The [`vmem`](https://github.com/Jirubizu/vmem) crate checked out **as a sibling directory**:
+- Nothing else to fetch by hand: [`vmem`](https://github.com/Jirubizu/vmem) is a
+  pinned git dependency, so `cargo` resolves it for you.
 
   ```sh
-  git clone https://github.com/Jirubizu/reclass-rs   # this repo
+  git clone https://github.com/Jirubizu/reclass-rs
+  cd reclass-rs && cargo build --release
   ```
 
 - **ptrace permission** to read another process. Easiest for development:
@@ -91,6 +95,23 @@ reclass-rs/
   ```
 
   Or grant `cap_sys_ptrace`, run as root, or only attach to your own descendants. Cross-process I/O uses `process_vm_readv`/`writev`, so no `ptrace`-stop is required for plain reads/writes.
+
+---
+
+## Install
+
+Grab the latest [release](https://github.com/Jirubizu/reclass-rs/releases/latest):
+
+```sh
+tar xzf reclass-linux-x86_64.tar.gz
+./reclass
+```
+
+The archive holds the `reclass` binary plus the bundled plugins in `plugins/`,
+which the app picks up from next to the binary. Both halves are built by the
+same toolchain in one CI step — the loader verifies that (see
+[Plugins](#plugins)) — so keep the pair together, or drop the `.so` into
+`~/.config/reclass-rs/plugins` instead.
 
 ---
 
@@ -213,6 +234,82 @@ A field type (`kind`) is a **shorthand string** — `u8`/`u16`/`u32`/`u64`, `i8`
 
 ---
 
+## Plugins
+
+Native `.so` plugins observe every snapshot and can ask the host to mutate the
+project. They're loaded (GUI builds only) from, in order:
+
+```
+~/.config/reclass-rs/plugins/     # or $XDG_CONFIG_HOME
+<dir of the binary>/plugins/      # what the release tarball ships
+```
+
+Manage them in *View → Plugins*: enable/disable, open a plugin's window, or
+reload one after a rebuild. A plugin that panics is disabled with its message
+recorded rather than taking down the session.
+
+### Bundled plugins
+
+All eight ship in one cdylib (`libreclass_official_plugins.so`):
+
+| Plugin | What it does |
+|---|---|
+| Pointer Summary | For every `ClassPtr` row, which class it targets and whether it moved since the last tick |
+| Sentinel Watch | Flags fields whose value must never change — magic-number / integrity detection |
+| Structure Diff | Freezes a baseline snapshot and diffs every later one against it |
+| Hex Dump | Raw hex viewer for an arbitrary address, read through the live backend |
+| Copy As | Context-menu entries to copy a field's declaration as C, Rust, Python, or JSON |
+| Cheat Table Exporter | Writes the current scalar rows out as a Cheat Engine `.CT` file |
+| Auto-attach | Polls `/proc` for a process by name and attaches when it appears |
+| Scheduled Sampler | Saves a timestamped project snapshot every N ticks |
+
+### Writing one
+
+[`crates/example-plugin`](crates/example-plugin/) is a complete, commented
+reference — a snapshot change logger covering hooks, a window, and a
+context-menu entry. The short version:
+
+```rust
+use reclass::plugin::*;
+
+#[derive(Default)]
+struct MyPlugin;
+
+impl HostPlugin for MyPlugin {
+    fn name(&self) -> &str { "My Plugin" }
+    fn version(&self) -> (u32, u32) { (1, 0) }
+}
+
+reclass_plugin_create!(MyPlugin);
+```
+
+Set `crate-type = ["cdylib"]`, depend on `reclass` by path, build, and drop the
+result into one of the directories above.
+
+Hooks receive `&AppState` / `&[Row]` — read-only. Mutations are deferred:
+a hook returns [`PluginAction`]s that the host applies in its own phase, the
+same path user actions and MCP calls take.
+
+### The same-toolchain contract
+
+> ⚠️ Rust has **no stable ABI**. A plugin must be built with the *identical*
+> toolchain as the host — same `rustc`, same dependency versions, same codegen
+> flags. This is enforced, not assumed: every plugin exports a fingerprint of
+> its crate version and build compiler, and the loader refuses anything that
+> doesn't match its own with an `ABI mismatch` error naming both sides. A
+> plugin built before this check existed fails with `missing 'reclass_plugin_abi'`.
+> Either way: rebuild the plugin against the host you're running.
+>
+> The one thing the check can't see is a `#[global_allocator]` difference — the
+> host frees memory the plugin allocated, so both sides must share an allocator.
+> The default system allocator on both, which is what you get unless you go out
+> of your way, satisfies this.
+
+> ⚠️ A plugin is native code running in-process with full access to the target's
+> memory. Only load ones you trust.
+
+---
+
 ## Feature flags
 
 | Crate | Feature | Default | Purpose |
@@ -221,7 +318,7 @@ A field type (`kind`) is a **shorthand string** — `u8`/`u16`/`u32`/`u64`, `i8`
 | `reclass-core` | `serde` | ✅ | RON project save/load |
 | `reclass` (app) | `gui` | ✅ | egui desktop front-end |
 | `reclass` (app) | `tui` | ✅ | ratatui terminal front-end |
-| `reclass-backend-vmem` | `access-tracker` | ❌ | ptrace hardware-breakpoint access tracker (contains the only `unsafe`) |
+| `reclass-backend-vmem` | `access-tracker` | ❌ | ptrace hardware-breakpoint access tracker |
 
 ```sh
 cargo build -p reclass-backend-vmem --features access-tracker   # enable the access tracker
@@ -242,10 +339,11 @@ The benches prove the engine batches reads — a flat 256-byte / 64-field class 
 
 ## Conventions & quality bar
 
-- Edition 2024, stable toolchain. `#![forbid(unsafe_code)]` in `core`; `unsafe` is confined to the `backend-vmem` access tracker, each call `// SAFETY`-noted.
+- Edition 2024, stable toolchain. `#![forbid(unsafe_code)]` in `core`; every other crate sets `#![deny(rust_2018_idioms)]`, and the two library surfaces also `#![warn(missing_docs)]`.
+- `unsafe` lives in exactly three places, each `// SAFETY`-noted: the `backend-vmem` access tracker (ptrace), `select_backend` (one `set_var` before any thread starts), and the plugin loader (`dlopen` plus the C-ABI entry points).
 - Errors: `thiserror` in libraries, `anyhow` only in the app.
-- `cargo fmt --all --check` and `cargo clippy --all-targets --all-features -D warnings` are clean; every `core` module ships unit tests.
-- CI (`.github/workflows/ci.yml`) runs fmt + clippy + test + bench-compile (and checks out `vmem` as a sibling).
+- `cargo fmt --all --check` and `cargo clippy --all-targets --all-features -- -D warnings` are clean; every `core` module ships unit tests.
+- CI (`.github/workflows/ci.yml`) runs fmt + clippy + test + bench-compile on every push, and a tagged push additionally builds the release artifacts — gated on that job passing.
 
 ---
 

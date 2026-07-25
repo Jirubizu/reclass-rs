@@ -1,6 +1,7 @@
 # `vmem` capability → API mapping
 
-Source inspected: `/home/jirubizu/dev/vmem/src/lib.rs` (Linux-only, x86-64).
+Source inspected: [`vmem`](https://github.com/Jirubizu/vmem) `src/lib.rs` at the
+revision pinned in the workspace `Cargo.toml` (Linux-only, x86-64).
 `vmem` addresses are `usize`; on the only supported target (`x86-64 Linux`) that is
 64-bit, so our `MemoryBackend` trait uses `u64` and the `backend-vmem` impl casts
 `u64 <-> usize` at the boundary.

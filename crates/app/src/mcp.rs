@@ -58,9 +58,17 @@ pub struct Call {
 /// What a forwarded [`Call`] wants done.
 pub enum Op {
     /// A `tools/call`: run tool `name` with JSON `args`.
-    Tool { name: String, args: Value },
+    Tool {
+        /// Tool name from the `tools/list` catalog.
+        name: String,
+        /// Arguments object, validated by the tool's handler.
+        args: Value,
+    },
     /// A `resources/read`: read resource `uri`.
-    Resource { uri: String },
+    Resource {
+        /// The `reclass://…` resource URI.
+        uri: String,
+    },
 }
 
 /// A running MCP server. Dropping it (or calling [`stop`](Self::stop)) signals

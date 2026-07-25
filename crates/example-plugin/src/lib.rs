@@ -5,6 +5,7 @@
 //! and a context-menu entry (`on_context_menu`). Build it as a dynamic library
 //! and drop the result into a `plugins/` directory next to the `reclass`
 //! binary — see the module docs of `reclass::plugin` for the build contract.
+#![deny(rust_2018_idioms)]
 
 use std::collections::HashMap;
 

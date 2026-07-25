@@ -133,62 +133,109 @@ pub fn abi_fingerprint() -> &'static str {
 /// [`AppState`] already exposes; the host applies these in its mutation phase.
 pub enum PluginAction {
     /// Create a class and open it in a view.
-    AddClass { name: String },
+    AddClass {
+        /// Display name for the new class.
+        name: String,
+    },
     /// Append a node to a class.
     PushNode {
+        /// Class to append to.
         class: ClassId,
+        /// Type of the new node.
         kind: NodeKind,
+        /// Field name.
         name: String,
     },
     /// Insert a node after `after_idx` in a class.
     InsertNode {
+        /// Class to insert into.
         class: ClassId,
+        /// The new node lands at `after_idx + 1`.
         after_idx: usize,
+        /// Type of the new node.
         kind: NodeKind,
+        /// Field name.
         name: String,
     },
     /// Remove node `idx` from a class.
-    RemoveNode { class: ClassId, idx: usize },
+    RemoveNode {
+        /// Class to remove from.
+        class: ClassId,
+        /// Node index.
+        idx: usize,
+    },
     /// Change node `idx`'s kind.
     SetKind {
+        /// Owning class.
         class: ClassId,
+        /// Node index.
         idx: usize,
+        /// Replacement type.
         kind: NodeKind,
     },
     /// Set an array node's element count.
     SetArrayCount {
+        /// Owning class.
         class: ClassId,
+        /// Node index; must already be an `Array`.
         idx: usize,
+        /// New element count.
         count: usize,
     },
     /// Rename node `idx`.
     RenameNode {
+        /// Owning class.
         class: ClassId,
+        /// Node index.
         idx: usize,
+        /// New field name.
         name: String,
     },
     /// Set node `idx`'s comment.
     SetComment {
+        /// Owning class.
         class: ClassId,
+        /// Node index.
         idx: usize,
+        /// New comment (empty clears it).
         comment: String,
     },
     /// Set a class's address expression.
-    SetAddressExpr { class: ClassId, expr: String },
+    SetAddressExpr {
+        /// Class to retarget.
+        class: ClassId,
+        /// Expression source, parsed by [`reclass_core::expr`].
+        expr: String,
+    },
     /// Attach to a process by pid.
-    AttachPid(i32),
+    AttachPid(
+        /// Target process id.
+        i32,
+    ),
     /// Write a value to an address, parsed by `kind`.
     WriteValue {
+        /// Absolute address in the target.
         addr: u64,
+        /// Type used to parse `text` into bytes.
         kind: NodeKind,
+        /// User-facing value text.
         text: String,
     },
     /// Save the project to a RON file.
-    SaveProject { path: String },
+    SaveProject {
+        /// Destination path.
+        path: String,
+    },
     /// Load a project from a RON file.
-    LoadProject { path: String },
+    LoadProject {
+        /// Source path.
+        path: String,
+    },
     /// Copy `text` to the system clipboard (host flushes it via egui).
-    SetClipboard(String),
+    SetClipboard(
+        /// Text to place on the clipboard.
+        String,
+    ),
 }
 
 /// Handle passed to a plugin at [`HostPlugin::init`]. `Send + Sync` so a plugin
@@ -473,7 +520,7 @@ impl PluginManager {
             // SAFETY: `raw` came from `Box::into_raw(Box::new(vec))`.
             *unsafe { Box::from_raw(raw) }
         } else {
-            let create: Symbol<CreateFn> =
+            let create: Symbol<'_, CreateFn> =
                 unsafe { lib.get(CREATE_SYMBOL) }.map_err(|source| PluginError::MissingSymbol {
                     path: disp.clone(),
                     source,

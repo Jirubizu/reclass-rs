@@ -5,6 +5,8 @@
 //! (x86-64 Linux) those are the same width, and we cast at this boundary.
 // `unsafe` lives in `select_backend` (env var) and the `tracker` module
 // (ptrace); each call is SAFETY-noted.
+#![deny(rust_2018_idioms)]
+#![warn(missing_docs)]
 
 use reclass_core::{MemError, MemoryBackend, Perms, Region, ScatterReq};
 use vmem::Process;

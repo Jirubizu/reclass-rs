@@ -2,7 +2,7 @@
 //! windows (file browser, memory map, settings, code generation).
 
 use eframe::egui;
-use reclass_backend_vmem::{kernel_available, select_backend};
+use reclass_backend_vmem::kernel_available;
 use reclass_core::codegen::Language;
 
 use super::settings::{Settings, settings_file};
@@ -530,10 +530,13 @@ impl ReClassApp {
         if !open || clicked_ok {
             self.show_kernel_unavailable = false;
             self.settings.use_kernel = false;
-            // Re-apply userspace backend; this is a no-op if already latched,
-            // but harmless and signals intent for the next restart.
-            // SAFETY: called from the GUI thread; env writes are benign here.
-            unsafe { select_backend(false) };
+            // Deliberately NOT calling `select_backend` here. It writes the
+            // process environment via `std::env::set_var`, which is unsound
+            // once eframe and the MCP server have spawned threads, and vmem
+            // has already latched its backend by this point anyway — the call
+            // bought nothing and raced with every concurrent env reader.
+            // Persisting the preference is what actually takes effect, on the
+            // next start, where `select_backend` runs single-threaded.
             self.settings.save();
         }
     }

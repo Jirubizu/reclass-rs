@@ -267,6 +267,23 @@ impl Engine {
     /// class overrunning its mapped region.
     const MAX_CLASS_BYTES: usize = 1 << 20;
 
+    /// Most buffers kept between ticks.
+    const MAX_POOLED_BUFS: usize = 64;
+
+    /// Largest buffer worth keeping between ticks. Above this the allocation
+    /// is a one-off (a huge class, or one truncated at [`MAX_CLASS_BYTES`])
+    /// and pooling it would pin the memory for the session.
+    const MAX_POOLED_BYTES: usize = 64 << 10;
+
+    /// `(buffer count, total retained capacity)` held by the pool.
+    #[cfg(test)]
+    fn pool_stats(&self) -> (usize, usize) {
+        (
+            self.buf_pool.len(),
+            self.buf_pool.iter().map(Vec::capacity).sum(),
+        )
+    }
+
     /// A fresh engine with a default array-expansion cap of 256 elements.
     #[must_use]
     pub fn new() -> Self {
@@ -400,9 +417,19 @@ impl Engine {
         }
 
         // -- return buffers to the pool --
+        // Bounded on both axes. A deep pointer chain creates one frame per
+        // followed pointer, and a pooled buffer keeps its capacity for the
+        // rest of the session — so an unbounded pool pins the high-water mark
+        // of every tick that ever ran. Surplus and oversized buffers are freed
+        // instead; the pool exists to spare the common small allocation, not
+        // to cache a one-off giant.
         for mut f in frames {
-            f.buf.clear();
-            self.buf_pool.push(std::mem::take(&mut f.buf));
+            if self.buf_pool.len() < Self::MAX_POOLED_BUFS
+                && f.buf.capacity() <= Self::MAX_POOLED_BYTES
+            {
+                f.buf.clear();
+                self.buf_pool.push(f.buf);
+            }
         }
         rows
     }
@@ -1164,5 +1191,71 @@ mod tests {
         // Nothing is mapped, so the read fails and falls back to the partial
         // scan — which is now bounded by the 1 MiB cap, not the class size.
         assert!(be.read_calls() < 1 + (1 << 20) / 256 + 256);
+
+        // The 1 MiB buffer is a one-off; pooling it would pin that megabyte
+        // for the rest of the session.
+        let (count, capacity) = eng.pool_stats();
+        assert_eq!(count, 0, "oversized buffer must not be retained");
+        assert_eq!(capacity, 0);
+    }
+}
+
+#[cfg(all(test, feature = "mock"))]
+mod pool_tests {
+    use super::*;
+    use crate::backend::MockBackend;
+    use crate::node::{IntWidth, Node};
+
+    #[test]
+    fn pool_retains_a_bounded_working_set() {
+        // One frame per followed pointer, so a long chain used to grow the
+        // pool without limit and hold every buffer's capacity forever.
+        const DEPTH: usize = Engine::MAX_POOLED_BUFS * 2;
+        const STRIDE: u64 = 16;
+        const BASE: u64 = 0x1_0000;
+
+        // `Link { val: u32, next: Link* }` — 12 bytes, self-referential.
+        let mut reg = ClassRegistry::new();
+        let link = reg.add_class("Link");
+        reg.push_node(link, Node::new("val", NodeKind::Hex(IntWidth::W32)))
+            .unwrap();
+        reg.push_node(
+            link,
+            Node::new("next", NodeKind::ClassPtr { class_id: link }),
+        )
+        .unwrap();
+
+        // Lay the chain out in memory and expand every hop.
+        let be = MockBackend::new();
+        let mut expand = ExpandState::new();
+        let mut path = Vec::new();
+        for d in 0..DEPTH {
+            let mut cell = Vec::with_capacity(12);
+            cell.extend_from_slice(&(d as u32).to_le_bytes());
+            cell.extend_from_slice(&(BASE + (d as u64 + 1) * STRIDE).to_le_bytes());
+            be.put(BASE + d as u64 * STRIDE, cell);
+            path.push(PathSeg::Node(1));
+            expand.expand(0, path.clone());
+        }
+
+        let mut eng = Engine::new();
+        let rows = eng.snapshot(
+            &be,
+            &reg,
+            &[Root {
+                class_id: link,
+                base: BASE,
+            }],
+            &expand,
+            None,
+        );
+        assert!(rows.len() > DEPTH, "the whole chain was followed");
+
+        let (count, capacity) = eng.pool_stats();
+        assert!(
+            count <= Engine::MAX_POOLED_BUFS,
+            "pool grew unbounded: {count} buffers for {DEPTH} frames"
+        );
+        assert!(capacity <= Engine::MAX_POOLED_BUFS * Engine::MAX_POOLED_BYTES);
     }
 }

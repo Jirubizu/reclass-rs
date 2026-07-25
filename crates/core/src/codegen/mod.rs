@@ -78,6 +78,42 @@ pub(super) fn rust_ident(name: &str) -> String {
     }
 }
 
+/// Escape a (already char-sanitized) identifier that collides with a C or C++
+/// keyword. C has no raw-identifier syntax, so the only escape is a trailing
+/// `_`. The C and C++ sets are merged: escaping a C++-only word in C output is
+/// harmless, and it keeps one struct definition valid under both languages.
+pub(super) fn c_ident(name: &str) -> String {
+    #[rustfmt::skip]
+    const KEYWORDS: [&str; 109] = [
+        // C (including C99/C11/C23 additions)
+        "alignas", "alignof", "auto", "bool", "break", "case", "char",
+        "const", "constexpr", "continue", "default", "do", "double", "else",
+        "enum", "extern", "false", "float", "for", "goto", "if", "inline",
+        "int", "long", "nullptr", "register", "restrict", "return", "short",
+        "signed", "sizeof", "static", "static_assert", "struct", "switch",
+        "thread_local", "true", "typedef", "typeof", "typeof_unqual", "union",
+        "unsigned", "void", "volatile", "while",
+        "_Alignas", "_Alignof", "_Atomic", "_BitInt", "_Bool", "_Complex",
+        "_Decimal128", "_Decimal32", "_Decimal64", "_Generic", "_Imaginary",
+        "_Noreturn", "_Static_assert", "_Thread_local",
+        // C++
+        "and", "and_eq", "asm", "bitand", "bitor", "catch", "char16_t",
+        "char32_t", "char8_t", "class", "compl", "concept", "const_cast",
+        "consteval", "constinit", "co_await", "co_return", "co_yield",
+        "decltype", "delete", "dynamic_cast", "explicit", "export", "friend",
+        "mutable", "namespace", "new", "noexcept", "not", "not_eq",
+        "operator", "or", "or_eq", "private", "protected", "public",
+        "reinterpret_cast", "requires", "static_cast", "template", "this",
+        "throw", "try", "typeid", "typename", "using", "virtual", "wchar_t",
+        "xor", "xor_eq",
+    ];
+    if KEYWORDS.contains(&name) {
+        format!("{name}_")
+    } else {
+        name.to_string()
+    }
+}
+
 pub(super) fn class_type_name(reg: &ClassRegistry, id: ClassId) -> String {
     match reg.name_of(id) {
         Some(n) => sanitize(n, || format!("Class{id}")),
@@ -85,10 +121,16 @@ pub(super) fn class_type_name(reg: &ClassRegistry, id: ClassId) -> String {
     }
 }
 
-/// A class's Rust type name, keyword-escaped (`class_type_name` is shared with
-/// C output, which does not need escaping).
+/// A class's Rust type name, keyword-escaped.
 pub(super) fn rust_type_name(reg: &ClassRegistry, id: ClassId) -> String {
     rust_ident(&class_type_name(reg, id))
+}
+
+/// A class's C/C++ type name, keyword-escaped. `struct` has its own namespace
+/// in C but keywords are still reserved there, so `struct int` is as invalid
+/// as a field named `int`.
+pub(super) fn c_type_name(reg: &ClassRegistry, id: ClassId) -> String {
+    c_ident(&class_type_name(reg, id))
 }
 
 /// Order classes so that any class embedded by value (`ClassInstance`, possibly
@@ -206,6 +248,28 @@ mod tests {
         let inner_pos = code.find("struct Inner {").unwrap();
         let player_pos = code.find("struct Player {").unwrap();
         assert!(inner_pos < player_pos);
+    }
+
+    #[test]
+    fn c_keyword_field_and_class_names_are_escaped() {
+        // C has no raw identifiers, so keywords get a trailing `_`. Without
+        // this the emitted file was `int32_t int;` — valid layout, invalid C.
+        let mut reg = ClassRegistry::new();
+        let cls = reg.add_class("class"); // C++ keyword as a type name
+        reg.push_node(cls, Node::new("int", NodeKind::Int(IntWidth::W32)))
+            .unwrap();
+        reg.push_node(cls, Node::new("delete", NodeKind::Float32))
+            .unwrap();
+        reg.push_node(cls, Node::new("next", NodeKind::ClassPtr { class_id: cls }))
+            .unwrap();
+
+        let code = generate(&reg, Language::C);
+        assert!(code.contains("int32_t int_;"), "{code}");
+        assert!(code.contains("float delete_;"), "{code}");
+        // forward decl, definition and the self-pointer must agree
+        assert!(code.contains("struct class_;"), "{code}");
+        assert!(code.contains("struct class_ {"), "{code}");
+        assert!(code.contains("struct class_* next;"), "{code}");
     }
 
     #[test]

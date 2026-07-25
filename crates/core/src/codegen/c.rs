@@ -1,7 +1,7 @@
 //! C and C++ struct emission: forward declarations, `#pragma pack(push, 1)`,
 //! definitions in inline-dependency order.
 
-use super::{Language, class_type_name, sanitize, topo_order};
+use super::{Language, c_ident, c_type_name, sanitize, topo_order};
 use crate::class::{Class, ClassRegistry};
 use crate::node::{IntWidth, NodeKind, TextEncoding};
 
@@ -16,7 +16,7 @@ pub(super) fn generate(reg: &ClassRegistry, lang: Language) -> String {
     }
     // forward declarations (handles ClassPtr cycles + arbitrary order)
     for class in reg.iter() {
-        let _ = writeln!(out, "struct {};", class_type_name(reg, class.id));
+        let _ = writeln!(out, "struct {};", c_type_name(reg, class.id));
     }
     out.push('\n');
     out.push_str("#pragma pack(push, 1)\n\n");
@@ -33,12 +33,12 @@ pub(super) fn generate(reg: &ClassRegistry, lang: Language) -> String {
 
 fn emit_c_struct(reg: &ClassRegistry, class: &Class, out: &mut String) {
     use std::fmt::Write;
-    let name = class_type_name(reg, class.id);
+    let name = c_type_name(reg, class.id);
     let offsets = reg.offsets(class.id);
     let _ = writeln!(out, "struct {name} {{");
     for (i, node) in class.nodes.iter().enumerate() {
         let off = offsets.get(i).copied().unwrap_or(0);
-        let field = sanitize(&node.name, || format!("field_{off:x}"));
+        let field = c_ident(&sanitize(&node.name, || format!("field_{off:x}")));
         let (decl, comment) = c_field(reg, &field, &node.kind);
         let trailing = if node.comment.is_empty() {
             format!(" // 0x{off:X}{comment}")
@@ -85,11 +85,11 @@ fn c_field(reg: &ClassRegistry, field: &str, kind: &NodeKind) -> (String, String
             c_field(reg, &format!("{field}[{count}]"), element)
         }
         NodeKind::ClassInstance { class_id } => (
-            format!("struct {} {field}", class_type_name(reg, *class_id)),
+            format!("struct {} {field}", c_type_name(reg, *class_id)),
             String::new(),
         ),
         NodeKind::ClassPtr { class_id } => (
-            format!("struct {}* {field}", class_type_name(reg, *class_id)),
+            format!("struct {}* {field}", c_type_name(reg, *class_id)),
             String::new(),
         ),
         NodeKind::Padding(n) | NodeKind::Unknown(n) => {

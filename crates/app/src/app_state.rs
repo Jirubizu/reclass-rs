@@ -585,13 +585,21 @@ impl AppState {
 
     /// Delete several nodes at once. Sorts by class then by descending index so
     /// removing earlier entries doesn't shift the indices of later ones.
-    pub fn delete_many(&mut self, targets: &[(ClassId, usize)]) {
+    ///
+    /// Returns the first failure. Deletion continues past it: the targets are
+    /// independent, and a stale index — a selection made before an MCP call
+    /// mutated the same class — should not silently drop the rest.
+    pub fn delete_many(&mut self, targets: &[(ClassId, usize)]) -> Result<(), AppError> {
         let mut t = targets.to_vec();
         t.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
         t.dedup();
+        let mut first_err = None;
         for (cls, idx) in t {
-            let _ = self.delete_node(cls, idx);
+            if let Err(e) = self.delete_node(cls, idx) {
+                first_err.get_or_insert(e);
+            }
         }
+        first_err.map_or(Ok(()), Err)
     }
 
     /// Change a node's kind, guarding against inline cycles.
@@ -845,7 +853,7 @@ mod tests {
                 .unwrap();
         }
         // delete indices 1, 3, 4 (order/dupes shouldn't matter)
-        st.delete_many(&[(c, 3), (c, 1), (c, 4), (c, 3)]);
+        st.delete_many(&[(c, 3), (c, 1), (c, 4), (c, 3)]).unwrap();
         let names: Vec<String> = st
             .project
             .registry

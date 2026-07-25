@@ -218,7 +218,9 @@ impl ReClassApp {
         let c1 = state.add_class("Class1");
         seed_class(&mut state, c1, &settings.default_kind, settings.seed_rows);
         if let Some(addr) = initial_addr {
-            let _ = state.set_address_expr(c1, addr);
+            state
+                .set_address_expr(c1, addr)
+                .expect("starter class was just created");
         }
         let mut app = ReClassApp {
             state,
@@ -320,7 +322,8 @@ impl ReClassApp {
                 self.clear_selection();
             }
             Action::SetExpr(cid, expr) => {
-                let _ = self.state.set_address_expr(cid, expr);
+                let r = self.state.set_address_expr(cid, expr);
+                self.report(r);
             }
             Action::Toggle(root, path) => self.state.toggle_expand(root, path),
             Action::ToggleCollapse(root, path) => self.state.toggle_collapse(root, path),
@@ -346,7 +349,8 @@ impl ReClassApp {
             Action::CancelEdit => self.editing = None,
             Action::CommitEdit => self.commit_edit(),
             Action::RenameClass(cid, name) => {
-                let _ = self.state.rename_class(cid, name);
+                let r = self.state.rename_class(cid, name);
+                self.report(r);
             }
             Action::StartRenameClass(cid) => {
                 let buf = self
@@ -387,7 +391,8 @@ impl ReClassApp {
                 }
             }
             Action::AddBytes(cid, n) => {
-                let _ = self.state.add_bytes(cid, n);
+                let r = self.state.add_bytes(cid, n);
+                self.report(r);
             }
             Action::AddArray(cid, element, count) => {
                 if let Err(e) = self.state.add_array(cid, element, count) {
@@ -403,7 +408,8 @@ impl ReClassApp {
                 }
             }
             Action::DeleteNode(cid, idx) => {
-                let _ = self.state.delete_node(cid, idx);
+                let r = self.state.delete_node(cid, idx);
+                self.report(r);
             }
             Action::DeleteSelected => self.delete_selected(),
             Action::ChangeKind(cid, idx, kind) => {
@@ -412,7 +418,8 @@ impl ReClassApp {
                 }
             }
             Action::SetArrayCount(cid, idx, n) => {
-                let _ = self.state.set_array_count(cid, idx, n);
+                let r = self.state.set_array_count(cid, idx, n);
+                self.report(r);
             }
             Action::ExpandAll => self.state.expand_all(),
             Action::CollapseAll => self.state.collapse_all(),
@@ -598,7 +605,8 @@ impl ReClassApp {
             .iter()
             .filter_map(|p| self.state.resolve_owner(view_class, p))
             .collect();
-        self.state.delete_many(&targets);
+        let r = self.state.delete_many(&targets);
+        self.report(r);
         self.clear_selection();
     }
 
@@ -614,10 +622,12 @@ impl ReClassApp {
         };
         match ed.field {
             EditField::Name => {
-                let _ = self.state.rename_node(owner, idx, ed.buf);
+                let r = self.state.rename_node(owner, idx, ed.buf);
+                self.report(r);
             }
             EditField::Comment => {
-                let _ = self.state.set_comment(owner, idx, ed.buf);
+                let r = self.state.set_comment(owner, idx, ed.buf);
+                self.report(r);
             }
             EditField::Value => {
                 // value writes need the live address+kind; resolve from rows

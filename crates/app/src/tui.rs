@@ -45,14 +45,21 @@ struct Tui {
 pub fn run(pid: Option<i32>, addr: Option<String>, project: Option<String>) -> anyhow::Result<()> {
     let mut state = AppState::new();
     let c1 = state.add_class("Class1");
+    // Both calls target the class created on the line above, so the only
+    // failure mode (`NotFound`) is unreachable — assert it rather than
+    // dropping the result and starting with a silently empty session.
     for i in 0..16 {
-        let _ = state.push_node(
-            c1,
-            Node::new(format!("field_{:X}", i * 8), NodeKind::Hex(IntWidth::W64)),
-        );
+        state
+            .push_node(
+                c1,
+                Node::new(format!("field_{:X}", i * 8), NodeKind::Hex(IntWidth::W64)),
+            )
+            .expect("starter class was just created");
     }
     if let Some(addr) = addr {
-        let _ = state.set_address_expr(c1, addr);
+        state
+            .set_address_expr(c1, addr)
+            .expect("starter class was just created");
     }
     if let Some(pid) = pid {
         match VmemBackend::by_pid(pid) {

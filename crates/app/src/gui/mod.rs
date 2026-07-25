@@ -200,6 +200,10 @@ struct ReClassApp {
     show_plugins: bool,
     /// Text a plugin asked to place on the clipboard; flushed next frame.
     pending_clipboard: Option<String>,
+    /// Background release checker behind View → "Check for updates…".
+    updater: crate::updater::Updater,
+    /// Whether the update window is open.
+    show_updates: bool,
 }
 
 impl ReClassApp {
@@ -256,6 +260,8 @@ impl ReClassApp {
             plugins: PluginManager::new(),
             show_plugins: false,
             pending_clipboard: None,
+            updater: crate::updater::Updater::default(),
+            show_updates: false,
         };
         // Load plugins from the per-user config dir first (for installed
         // binaries, e.g. `~/.config/reclass-rs/plugins`), then from a
@@ -756,6 +762,7 @@ impl eframe::App for ReClassApp {
         self.kernel_unavailable_window(&ctx);
         self.plugins.show_windows(&ctx, &self.state);
         self.plugins_window(&ctx);
+        self.updates_window(&ctx);
 
         for a in actions {
             self.apply(a);

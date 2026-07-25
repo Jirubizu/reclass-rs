@@ -16,3 +16,4 @@ pub mod mcp;
 pub mod plugin;
 #[cfg(feature = "tui")]
 pub mod tui;
+pub mod updater;

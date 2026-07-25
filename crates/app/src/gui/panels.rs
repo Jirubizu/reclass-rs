@@ -8,6 +8,7 @@ use reclass_core::codegen::Language;
 use super::settings::{Settings, settings_file};
 use super::widgets::scalar_kinds;
 use super::{Action, FileMode, ReClassApp, col};
+use crate::updater::{Status as UpdateStatus, current, format_version};
 
 impl ReClassApp {
     /// Render the in-app file browser (when open) and push `Load`/`Save` on confirm.
@@ -199,6 +200,12 @@ impl ReClassApp {
                     ui.separator();
                     ui.checkbox(&mut self.show_settings, "Settings");
                     ui.checkbox(&mut self.show_plugins, "Plugins");
+                    ui.separator();
+                    if ui.button("Check for updates…").clicked() {
+                        self.updater.check();
+                        self.show_updates = true;
+                        ui.close();
+                    }
                 });
                 ui.separator();
                 ui.label("Refresh Hz:");
@@ -580,5 +587,80 @@ impl ReClassApp {
                 });
             });
         self.show_codegen = open;
+    }
+
+    /// View → "Check for updates…": report the newest release and, when it is
+    /// newer than this build, show its changelog with an install button.
+    pub(super) fn updates_window(&mut self, ctx: &egui::Context) {
+        if !self.show_updates {
+            return;
+        }
+        let running = format_version(current());
+        let mut open = true;
+        let status = self.updater.status();
+        egui::Window::new("Updates")
+            .collapsible(false)
+            .resizable(true)
+            .default_width(520.0)
+            .open(&mut open)
+            .show(ctx, |ui| match &status {
+                UpdateStatus::Idle | UpdateStatus::Checking => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Checking for updates…");
+                    });
+                }
+                UpdateStatus::UpToDate => {
+                    ui.label(format!("Up to date — running {running}."));
+                }
+                UpdateStatus::Available(rel) => {
+                    ui.heading(format!("{} is available", rel.tag));
+                    ui.label(format!("You are running {running}."));
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .max_height(300.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            if rel.notes.is_empty() {
+                                ui.weak("(no changelog published)");
+                            } else {
+                                ui.label(&rel.notes);
+                            }
+                        });
+                    ui.separator();
+                    if rel.asset_url.is_some() {
+                        if ui.button("Install update").clicked() {
+                            self.updater.install();
+                        }
+                        ui.weak("Downloads the release tarball and replaces this binary.");
+                    } else {
+                        ui.weak("This release publishes no Linux build; install it by hand.");
+                    }
+                }
+                UpdateStatus::Installing => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Downloading and installing…");
+                    });
+                }
+                UpdateStatus::Installed(v) => {
+                    ui.label(format!(
+                        "Installed {}. Restart reclass to run it.",
+                        format_version(*v)
+                    ));
+                }
+                UpdateStatus::Failed(msg) => {
+                    ui.colored_label(egui::Color32::RED, format!("⚠ {msg}"));
+                    if ui.button("Retry").clicked() {
+                        self.updater.check();
+                    }
+                }
+            });
+        if !open {
+            self.show_updates = false;
+            if matches!(status, UpdateStatus::Failed(_) | UpdateStatus::Installed(_)) {
+                self.updater.reset();
+            }
+        }
     }
 }

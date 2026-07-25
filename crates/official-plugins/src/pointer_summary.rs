@@ -10,8 +10,12 @@ use reclass::plugin::*;
 pub struct PointerSummary {
     /// `(name, target_class, values…)` entries, rebuilt each snapshot.
     lines: Vec<String>,
-    /// Observed pointer values to detect changes.
-    last: HashMap<String, (u64, String)>,
+    /// Last observed target address per pointer, to mark the ones that moved.
+    ///
+    /// Keyed by the row's identity `(root, path)`, not its display name: two
+    /// fields called `next` in different classes or views are different
+    /// pointers, and sharing a key made each one report the other's moves.
+    last: HashMap<(usize, Vec<PathSeg>), u64>,
 }
 
 impl HostPlugin for PointerSummary {
@@ -26,6 +30,10 @@ impl HostPlugin for PointerSummary {
         let registry = state.registry();
         self.lines.clear();
 
+        // Rebuilt rather than updated in place: an entry for a row that is no
+        // longer in the snapshot can never match again, and leaving it behind
+        // grows the map for the life of the session.
+        let mut seen = HashMap::with_capacity(self.last.len());
         for row in rows {
             let class_id = match &row.kind {
                 NodeKind::ClassPtr { class_id } => *class_id,
@@ -35,17 +43,16 @@ impl HostPlugin for PointerSummary {
             // peek: first few field values one level deep (we only have `rows` for
             // the current view; deeper targets aren't expanded so we show just the
             // class name + address).
-            let prev = self
-                .last
-                .get(&row.name)
-                .map(|(v, _)| *v != row.address)
-                .unwrap_or(false);
-            let prefix = if prev { "* " } else { "  " };
-            let line = format!("{prefix}{} → {target} @ 0x{:X}", row.name, row.address);
-            self.lines.push(line);
-            self.last
-                .insert(row.name.clone(), (row.address, row.value.clone()));
+            let key = (row.root, row.path.clone());
+            let moved = self.last.get(&key).is_some_and(|prev| *prev != row.address);
+            let prefix = if moved { "* " } else { "  " };
+            self.lines.push(format!(
+                "{prefix}{} → {target} @ 0x{:X}",
+                row.name, row.address
+            ));
+            seen.insert(key, row.address);
         }
+        self.last = seen;
         Vec::new()
     }
 

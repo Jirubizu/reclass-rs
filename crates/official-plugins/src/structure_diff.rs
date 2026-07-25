@@ -6,8 +6,13 @@ use std::collections::HashMap;
 
 use reclass::plugin::*;
 
-/// Keyed by `(root, path_string)`.
-type RowKey = (usize, String);
+/// Keyed by `(root, path)`.
+///
+/// The path is the structured `Vec<PathSeg>`, not `format!("{:?}", …)` of it:
+/// `PathSeg` is already `Hash + Eq`, so the debug string bought nothing while
+/// silently tying snapshot identity to a `Debug` impl nobody would think to
+/// keep stable.
+type RowKey = (usize, Vec<PathSeg>);
 
 #[derive(Clone)]
 struct SnapshotEntry {
@@ -45,7 +50,7 @@ impl HostPlugin for StructureDiff {
             .iter()
             .map(|r| {
                 (
-                    (r.root, format!("{:?}", r.path)),
+                    (r.root, r.path.clone()),
                     SnapshotEntry {
                         name: r.name.clone(),
                         address: r.address,

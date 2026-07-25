@@ -1,8 +1,8 @@
 [package]
 name = "reclass-example-plugin"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 publish = false
 description = "Reference reclass-rs plugin: a snapshot change logger"
 

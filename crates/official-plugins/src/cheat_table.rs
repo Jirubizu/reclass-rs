@@ -38,6 +38,8 @@ pub struct CheatTableExporter {
     path: String,
     /// Rows from the last snapshot (for export).
     last_rows: Vec<CeRow>,
+    /// Outcome of the last export, shown in the window.
+    status: Option<Result<String, String>>,
 }
 
 #[derive(Clone)]
@@ -102,20 +104,24 @@ impl HostPlugin for CheatTableExporter {
                 ui.text_edit_singleline(&mut self.path);
                 if ui.button("Export .CT").clicked() && !self.path.is_empty() {
                     let xml = build_ct(&self.last_rows);
-                    let path = self.path.clone();
-                    // Use SaveProject as a convenience; it writes a file.
-                    // But we need arbitrary file content, not a RON project.
-                    // ponytail: write directly here since the hook has no generic file-write action.
-                    match std::fs::write(&path, xml) {
-                        Ok(()) => {
-                            // success — no host action needed
-                        }
-                        Err(e) => {
-                            // error is swallowed; user sees no feedback (ponytail:
-                            // add a PluginAction::Notify or similar later).
-                            let _ = e;
-                        }
+                    let n = self.last_rows.len();
+                    // The hook has no generic file-write action, so write
+                    // directly — but report the outcome in this window rather
+                    // than dropping it. A failed export used to look exactly
+                    // like a successful one.
+                    self.status = Some(match std::fs::write(&self.path, xml) {
+                        Ok(()) => Ok(format!("wrote {n} entries to {}", self.path)),
+                        Err(e) => Err(format!("{}: {e}", self.path)),
+                    });
+                }
+                match &self.status {
+                    Some(Ok(msg)) => {
+                        ui.colored_label(egui::Color32::from_rgb(0x4C, 0xAF, 0x50), msg);
                     }
+                    Some(Err(msg)) => {
+                        ui.colored_label(egui::Color32::from_rgb(0xE5, 0x39, 0x35), msg);
+                    }
+                    None => {}
                 }
                 egui::ScrollArea::vertical()
                     .max_height(300.0)

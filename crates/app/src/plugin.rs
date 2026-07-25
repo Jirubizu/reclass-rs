@@ -14,9 +14,20 @@
 //! plugin is built with the *identical* toolchain (same `rustc`, same
 //! dependency versions, same codegen flags) as the host. That is the deal:
 //! you get drop-in `.so` reloading in exchange for a strict build contract.
-//! [`HostPlugin::version`] is metadata for the manager UI — it is **not** and
-//! cannot be an ABI-mismatch guard (a version number can't detect a toolchain
-//! skew). Mismatched builds are undefined behaviour, not a load error.
+//!
+//! The contract is **enforced at load**: every plugin exports
+//! [`ABI_SYMBOL`], a `*const c_char` fingerprint of the crate version and the
+//! `rustc` that built it (see `build.rs`). The loader compares it against its
+//! own [`ABI_FINGERPRINT`] before reading any other symbol, so a skewed build
+//! is a [`PluginError::AbiMismatch`], not undefined behaviour. That check is
+//! itself skew-proof: a C string has a C layout.
+//!
+//! It does **not** cover a `#[global_allocator]` difference. The host calls
+//! `Box::from_raw` on memory the plugin allocated, so host and plugin must
+//! also share an allocator; the default system allocator on both sides
+//! satisfies this, and nothing detects a divergence.
+//! [`HostPlugin::version`] is metadata for the manager UI — the ABI gate, not
+//! the version number, is what rejects an incompatible build.
 //!
 //! ## Safety boundary
 //!
@@ -83,6 +94,40 @@ pub const CREATE_ALL_SYMBOL: &[u8] = b"reclass_plugin_create_all";
 /// FFI/soundness caveats as [`CreateFn`].
 #[allow(improper_ctypes_definitions)]
 pub type CreateAllFn = unsafe extern "C" fn() -> *mut Vec<Box<dyn HostPlugin>>;
+
+/// The C-ABI symbol carrying a plugin's toolchain fingerprint, emitted by
+/// [`reclass_plugin_create!`] / [`reclass_plugin_create_all!`]. The loader
+/// reads it *before* touching any other symbol.
+pub const ABI_SYMBOL: &[u8] = b"reclass_plugin_abi";
+
+/// Signature of the fingerprint entry point: a NUL-terminated C string.
+///
+/// Unlike [`CreateFn`], this one is genuinely FFI-safe — a `*const c_char`
+/// has a C layout by definition. That is the point: the gate must stay
+/// readable across exactly the toolchain skew it exists to detect.
+pub type AbiFn = unsafe extern "C" fn() -> *const std::os::raw::c_char;
+
+/// This build's ABI fingerprint: crate version plus the full `rustc --verbose
+/// --version` of the compiler that produced it (see `build.rs`).
+///
+/// A plugin links its own copy of this crate, so the constant baked into a
+/// `.so` records *that* build's toolchain. Comparing the two turns the
+/// module's unenforceable same-toolchain contract into a load error.
+///
+/// Trailing NUL so it can be handed out as a C string with no allocation.
+pub const ABI_FINGERPRINT: &str = concat!(
+    "reclass ",
+    env!("CARGO_PKG_VERSION"),
+    "; ",
+    env!("RECLASS_ABI_RUSTC"),
+    "\0"
+);
+
+/// [`ABI_FINGERPRINT`] without its terminating NUL, for comparison and display.
+#[must_use]
+pub fn abi_fingerprint() -> &'static str {
+    ABI_FINGERPRINT.trim_end_matches('\0')
+}
 
 /// A mutation a plugin asks the host to perform. Mirrors the verbs
 /// [`AppState`] already exposes; the host applies these in its mutation phase.
@@ -230,6 +275,27 @@ pub enum PluginError {
         /// The library path.
         path: String,
     },
+    /// The library has no `reclass_plugin_abi` symbol, so its toolchain
+    /// cannot be verified. Predates the ABI gate, or was not built with the
+    /// `reclass_plugin_create!` macro.
+    #[error(
+        "{path}: missing '{sym}' symbol — rebuild the plugin against this host",
+        sym = String::from_utf8_lossy(ABI_SYMBOL)
+    )]
+    MissingAbi {
+        /// The library path.
+        path: String,
+    },
+    /// The plugin was built by a different toolchain or `reclass` version.
+    #[error("{path}: ABI mismatch\n  host:   {host}\n  plugin: {plugin}")]
+    AbiMismatch {
+        /// The library path.
+        path: String,
+        /// The host's fingerprint.
+        host: String,
+        /// The plugin's fingerprint.
+        plugin: String,
+    },
 }
 
 /// Metadata + UI state snapshot for one loaded plugin, cloned for the manager
@@ -254,6 +320,39 @@ pub struct PluginInfo {
     pub error: Option<String>,
     /// Context-menu entries `(id, label)`, owned copies.
     pub menu_entries: Vec<(String, String)>,
+}
+
+/// Reject a library whose toolchain fingerprint does not match this build.
+///
+/// Reading `reclass_plugin_abi` is safe under skew because it returns a
+/// `*const c_char`. Everything the loader does afterwards is not, which is
+/// why this runs first.
+fn check_abi(lib: &Library, path: &str) -> Result<(), PluginError> {
+    let Ok(abi) = (unsafe { lib.get::<AbiFn>(ABI_SYMBOL) }) else {
+        return Err(PluginError::MissingAbi {
+            path: path.to_string(),
+        });
+    };
+    // SAFETY: macro-generated; returns a pointer to a `'static` NUL-terminated
+    // string constant in the plugin image, which stays mapped for `lib`'s life.
+    let raw = unsafe { abi() };
+    if raw.is_null() {
+        return Err(PluginError::MissingAbi {
+            path: path.to_string(),
+        });
+    }
+    let plugin = unsafe { std::ffi::CStr::from_ptr(raw) }
+        .to_string_lossy()
+        .into_owned();
+    if plugin == abi_fingerprint() {
+        Ok(())
+    } else {
+        Err(PluginError::AbiMismatch {
+            path: path.to_string(),
+            host: abi_fingerprint().to_string(),
+            plugin,
+        })
+    }
 }
 
 /// One loaded plugin plus the library that must outlive it.
@@ -354,6 +453,13 @@ impl PluginManager {
             path: disp.clone(),
             source,
         })?;
+
+        // Verify the toolchain BEFORE touching `reclass_plugin_create`. Every
+        // other symbol here hands Rust types across the boundary and is only
+        // meaningful under the same-toolchain contract; this one is a plain
+        // `*const c_char`, so it stays readable across exactly the skew it
+        // exists to detect.
+        check_abi(&lib, &disp)?;
 
         // Prefer the bundle entry point; fall back to the single-plugin one.
         let created: Vec<Box<dyn HostPlugin>> = if let Ok(create_all) =
@@ -564,11 +670,32 @@ impl PluginManager {
     }
 }
 
+/// Emit the `reclass_plugin_abi` symbol carrying this build's toolchain
+/// fingerprint. Invoked by both entry-point macros; a plugin never calls it
+/// directly, and must not emit it twice.
+#[macro_export]
+macro_rules! reclass_plugin_abi {
+    () => {
+        /// Toolchain fingerprint. See [`reclass::plugin::ABI_FINGERPRINT`].
+        #[unsafe(no_mangle)]
+        pub extern "C" fn reclass_plugin_abi() -> *const ::std::os::raw::c_char {
+            // The constant is NUL-terminated and `'static`, so this is a plain
+            // C string pointer into the plugin image — no allocation, and no
+            // Rust type crosses the boundary.
+            $crate::plugin::ABI_FINGERPRINT
+                .as_ptr()
+                .cast::<::std::os::raw::c_char>()
+        }
+    };
+}
+
 /// Generate the C-ABI entry point for a plugin type. The type must implement
 /// [`HostPlugin`] and [`Default`]. Place once in the plugin crate's `lib.rs`.
 #[macro_export]
 macro_rules! reclass_plugin_create {
     ($ty:ty) => {
+        $crate::reclass_plugin_abi!();
+
         /// Plugin entry point. See [`reclass::plugin`].
         #[unsafe(no_mangle)]
         #[allow(improper_ctypes_definitions)]
@@ -597,6 +724,8 @@ macro_rules! reclass_plugin_create {
 #[macro_export]
 macro_rules! reclass_plugin_create_all {
     ($($ty:ty),+ $(,)?) => {
+        $crate::reclass_plugin_abi!();
+
         /// Bundle entry point. See [`reclass::plugin`].
         #[unsafe(no_mangle)]
         #[allow(improper_ctypes_definitions)]

@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use reclass::plugin::{AppState, PluginManager};
+use reclass::plugin::{AppState, PluginError, PluginManager};
 
 /// Platform library file name for the reference plugin crate.
 fn plugin_lib_name() -> &'static str {
@@ -155,4 +155,72 @@ fn loads_official_bundle_with_all_plugins() {
         after.iter().filter(|i| i.name == "Pointer Summary").count(),
         1
     );
+}
+
+/// Compile `src` as a standalone cdylib with plain `rustc` — deliberately not
+/// linking `reclass`, so the library exports exactly the symbols written here
+/// and nothing else.
+fn build_bare_cdylib(name: &str, src: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("reclass_abi_test_{name}"));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let rs = dir.join("lib.rs");
+    std::fs::write(&rs, src).expect("write source");
+    let status = Command::new("rustc")
+        .args(["--edition", "2024", "--crate-type", "cdylib"])
+        .arg("--crate-name")
+        .arg(name)
+        .arg("-o")
+        .arg(dir.join(plugin_lib_name().replace("reclass_example_plugin", name)))
+        .arg(&rs)
+        .status()
+        .expect("spawn rustc");
+    assert!(status.success(), "building the bare cdylib failed");
+    dir.join(plugin_lib_name().replace("reclass_example_plugin", name))
+}
+
+#[test]
+fn rejects_plugin_without_an_abi_fingerprint() {
+    // `reclass_plugin_create` returns null here, so if the loader called it the
+    // error would be `NullPlugin`. Getting `MissingAbi` proves the gate runs
+    // *before* any Rust-ABI symbol is touched — the whole point of it.
+    let so = build_bare_cdylib(
+        "no_abi_plugin",
+        r#"
+        #[unsafe(no_mangle)]
+        pub extern "C" fn reclass_plugin_create() -> *mut u8 { ::std::ptr::null_mut() }
+        "#,
+    );
+    let mut mgr = PluginManager::new();
+    let err = mgr.load_file(&so).expect_err("must be rejected");
+    assert!(
+        matches!(err, PluginError::MissingAbi { .. }),
+        "expected MissingAbi, got {err:?}"
+    );
+    assert!(mgr.is_empty());
+}
+
+#[test]
+fn rejects_plugin_built_by_a_different_toolchain() {
+    let so = build_bare_cdylib(
+        "skewed_plugin",
+        r#"
+        #[unsafe(no_mangle)]
+        pub extern "C" fn reclass_plugin_abi() -> *const ::std::os::raw::c_char {
+            c"reclass 0.0.0; rustc 1.0.0 (deadbeef 1970-01-01)".as_ptr()
+        }
+        #[unsafe(no_mangle)]
+        pub extern "C" fn reclass_plugin_create() -> *mut u8 { ::std::ptr::null_mut() }
+        "#,
+    );
+    let mut mgr = PluginManager::new();
+    let err = mgr.load_file(&so).expect_err("must be rejected");
+    match err {
+        PluginError::AbiMismatch { host, plugin, .. } => {
+            assert_eq!(plugin, "reclass 0.0.0; rustc 1.0.0 (deadbeef 1970-01-01)");
+            assert_eq!(host, reclass::plugin::abi_fingerprint());
+            assert_ne!(host, plugin);
+        }
+        other => panic!("expected AbiMismatch, got {other:?}"),
+    }
+    assert!(mgr.is_empty());
 }

@@ -378,7 +378,7 @@ impl ClassRegistry {
                 let mut complete = true;
                 for n in &class.nodes {
                     let (s, c) = self.node_size_checked(&n.kind, stack);
-                    total += s;
+                    total = total.saturating_add(s);
                     complete &= c;
                 }
                 stack.pop();
@@ -417,7 +417,7 @@ impl ClassRegistry {
                     offs.push(acc);
                     let mut stack = vec![id];
                     let (s, c) = self.node_size_checked(&n.kind, &mut stack);
-                    acc += s;
+                    acc = acc.saturating_add(s);
                     complete &= c;
                 }
                 (offs, complete)
@@ -616,6 +616,29 @@ mod tests {
         assert_eq!(reg.offsets(c), vec![0, 12]);
         reg.set_array_count(c, 0, 5).unwrap();
         assert_eq!(reg.offsets(c), vec![0, 20]);
+    }
+
+    #[test]
+    fn absurd_array_count_saturates_instead_of_overflowing() {
+        // `set_array_count` is reachable from the GUI, plugins, and the MCP
+        // `set_array_count` tool, none of which bound the count. Summing node
+        // sizes must not overflow (debug panic / release wraparound).
+        let mut reg = ClassRegistry::new();
+        let c = reg.add_class("C");
+        reg.push_node(
+            c,
+            Node::new(
+                "arr",
+                NodeKind::Array {
+                    element: Box::new(h32()),
+                    count: usize::MAX,
+                },
+            ),
+        )
+        .unwrap();
+        reg.push_node(c, Node::new("tail", h32())).unwrap();
+        assert_eq!(reg.size_of(c), usize::MAX);
+        assert_eq!(reg.offsets(c), vec![0, usize::MAX]);
     }
 
     #[test]

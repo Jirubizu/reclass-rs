@@ -1,5 +1,10 @@
-//! Auto-attach to a process by name and re-attach when it restarts. Scans
-//! `/proc` for the configured name each tick (if not already attached).
+//! Auto-attach to a process by name. Scans `/proc` for the configured name
+//! every 30 ticks while nothing is attached.
+//!
+//! Does *not* re-attach after the target restarts: `AppState::attached()`
+//! stays true while the backend exists, whether or not the process behind it
+//! is still alive, so nothing here can observe the exit. Detecting that needs
+//! a liveness check on the backend, which does not exist yet.
 
 use std::path::PathBuf;
 
@@ -9,8 +14,6 @@ use reclass::plugin::*;
 pub struct AutoAttach {
     /// Process name to look for (from `/proc/<pid>/comm`).
     target: String,
-    /// Whether to re-attach after the process exits.
-    reattach: bool,
     /// Avoid spamming the attach action — only emit when the pid changes.
     last_seen_pid: Option<i32>,
     /// Throttle: skip this many ticks between /proc scans.
@@ -55,7 +58,6 @@ impl HostPlugin for AutoAttach {
             .show(ctx, |ui| {
                 ui.label("Process name:");
                 ui.text_edit_singleline(&mut self.target);
-                ui.checkbox(&mut self.reattach, "Re-attach on restart");
                 if state.attached() {
                     ui.label("Currently attached.");
                 } else if !self.target.is_empty() {
@@ -72,8 +74,13 @@ fn find_by_comm(target: &str) -> Option<i32> {
     let entries = std::fs::read_dir("/proc").ok()?;
     for entry in entries.flatten() {
         let file_name = entry.file_name();
-        let pid_str = file_name.to_str()?;
-        let pid: i32 = pid_str.parse().ok()?;
+        // `continue`, not `?`: /proc is full of non-numeric entries
+        // (`cpuinfo`, `meminfo`, `self`, …) and readdir order is arbitrary.
+        // Propagating here abandoned the whole scan at the first one, so the
+        // target was usually never found at all.
+        let Some(pid) = file_name.to_str().and_then(|s| s.parse::<i32>().ok()) else {
+            continue;
+        };
         let comm_path = PathBuf::from(format!("/proc/{pid}/comm"));
         if let Ok(name) = std::fs::read_to_string(&comm_path)
             && name.trim() == target

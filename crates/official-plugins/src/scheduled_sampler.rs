@@ -5,16 +5,39 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use reclass::plugin::*;
 
-#[derive(Default)]
 pub struct ScheduledSampler {
     /// Output directory for saved projects.
     dir: String,
-    /// Ticks between saves.
+    /// Ticks between saves. Never 0 — see [`Default`] and `set_interval`.
     interval: u64,
     /// Whether sampling is active.
     enabled: bool,
     /// Running tick counter.
     tick: u64,
+}
+
+impl Default for ScheduledSampler {
+    fn default() -> Self {
+        Self {
+            dir: String::new(),
+            interval: Self::DEFAULT_INTERVAL,
+            enabled: false,
+            tick: 0,
+        }
+    }
+}
+
+impl ScheduledSampler {
+    /// One save per second at the ~60 Hz refresh rate.
+    const DEFAULT_INTERVAL: u64 = 60;
+
+    /// The only writer of `interval`. A derived `Default` left it 0, and the
+    /// tick check divided by it — safe today only because egui's slider
+    /// happens to clamp an out-of-range value into 1..=3600 before the
+    /// enable checkbox can be reached. Clamping here does not depend on that.
+    fn set_interval(&mut self, ticks: u64) {
+        self.interval = ticks.max(1);
+    }
 }
 
 impl HostPlugin for ScheduledSampler {
@@ -54,7 +77,7 @@ impl HostPlugin for ScheduledSampler {
                 ui.text_edit_singleline(&mut self.dir);
                 let mut intv = self.interval;
                 ui.add(egui::Slider::new(&mut intv, 1..=3600).text("Interval (ticks)"));
-                self.interval = intv;
+                self.set_interval(intv);
                 ui.label(format!(
                     "~{}s between saves at 60 Hz",
                     self.interval as f64 / 60.0

@@ -27,7 +27,7 @@ You define a *class* as an ordered list of typed *fields*; reclass-rs resolves a
   - **value-change flash** that fades out so live changes are easy to spot;
   - inline editing of values, names, and comments with write-back to the target.
 - **Process picker**, **memory-map view**, and **project save/load** (RON) that remembers the attached process name and **auto-attaches** on load.
-- **Settings** window (*View → Settings*) persisted to `~/.config/reclass-rs/settings.ron`: value-change highlight color + fade + on/off, the default field type (e.g. `Hex64` → `Int64`) and seed-row count for new classes, the max array elements rendered, and the **MCP control server** toggle + port (see [MCP server](#mcp-server)).
+- **Settings** window (*View → Settings*) persisted to `~/.config/reclass-rs/settings.ron`: value-change highlight color + fade + on/off, the default field type (e.g. `Hex64` → `Int64`) and seed-row count for new classes, the max array elements rendered, the **MCP control server** toggle + port (see [MCP server](#mcp-server)), and **per-plugin state** — enabled, window, and each plugin's own configuration (see [Plugins](#plugins)).
 - **Code generation** to C, C++, and Rust (`#[repr(C, packed)]`), with offsets as comments — generated Rust's `size_of`/`offset_of` match the model (verified by a test).
 - **In-app updates** (*View → Check for updates…*): compares this build against the newest GitHub release, shows its changelog, and — one button — downloads the release tarball and swaps in the new binary plus its matching plugin bundle. Takes effect on restart. Uses `curl` and `tar`; if the install directory is not writable it says so instead of half-updating.
 - **Optional ptrace access tracker** (`access-tracker` feature): "what instruction wrote/accessed this address" via x86-64 hardware breakpoints.
@@ -249,6 +249,14 @@ Manage them in *View → Plugins*: enable/disable, open a plugin's window, or
 reload one after a rebuild. A plugin that panics is disabled with its message
 recorded rather than taking down the session.
 
+All of that persists. Each plugin's enabled flag, window state, and its own
+configuration are written to `settings.ron` under `plugins:`, keyed by plugin
+name, and restored at startup — see *View → Settings → **Plugins*** for what is
+remembered. An entry whose plugin isn't installed is kept and skipped, so
+removing a `.so` and putting it back does not lose its setup; a configuration
+blob the plugin no longer understands (after a format change) is discarded and
+that plugin starts from its own defaults.
+
 ### Bundled plugins
 
 All eight ship in one cdylib (`libreclass_official_plugins.so`):
@@ -290,6 +298,16 @@ result into one of the directories above.
 Hooks receive `&AppState` / `&[Row]` — read-only. Mutations are deferred:
 a hook returns [`PluginAction`]s that the host applies in its own phase, the
 same path user actions and MCP calls take.
+
+To persist configuration, implement `save_settings` / `load_settings`. Derive
+serde on the plugin, `#[serde(skip)]` the transient fields, and the two
+helpers do the rest — returning `false` from `load_settings` tells the host to
+drop a blob this build can no longer read:
+
+```rust
+fn save_settings(&self) -> Option<String> { save_json(self) }
+fn load_settings(&mut self, data: &str) -> bool { load_json(self, data) }
+```
 
 ### The same-toolchain contract
 

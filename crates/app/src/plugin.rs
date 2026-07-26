@@ -58,6 +58,7 @@
 //! reclass_plugin_create!(MyPlugin);
 //! ```
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -294,6 +295,76 @@ pub trait HostPlugin {
         _state: &AppState,
     ) -> Vec<PluginAction> {
         Vec::new()
+    }
+
+    /// Serialize this plugin's own configuration for persistence, as an
+    /// opaque blob the host stores verbatim in the user's settings file.
+    ///
+    /// `None` (the default) means the plugin has nothing worth remembering.
+    /// [`save_json`] covers the common case.
+    fn save_settings(&self) -> Option<String> {
+        None
+    }
+
+    /// Restore a blob previously produced by
+    /// [`save_settings`](Self::save_settings).
+    ///
+    /// Return `false` when the blob can no longer be understood — after an
+    /// upgrade changed the plugin's format, say. The host then discards the
+    /// stale blob and leaves the plugin on its own defaults, rather than
+    /// carrying an unreadable entry forever. [`load_json`] covers the common
+    /// case.
+    fn load_settings(&mut self, _data: &str) -> bool {
+        false
+    }
+}
+
+/// `save_settings` for a plugin that derives [`serde::Serialize`]: JSON, or
+/// `None` if the value cannot be serialized.
+pub fn save_json<T: serde::Serialize>(value: &T) -> Option<String> {
+    serde_json::to_string(value).ok()
+}
+
+/// `load_settings` for a plugin that derives [`serde::Deserialize`]: overwrite
+/// `slot` from `data`, reporting whether the blob was usable.
+///
+/// Mark transient fields `#[serde(skip)]` and the struct `#[serde(default)]`
+/// so a blob written by an older build still loads with new fields defaulted.
+pub fn load_json<T: serde::de::DeserializeOwned>(slot: &mut T, data: &str) -> bool {
+    match serde_json::from_str(data) {
+        Ok(v) => {
+            *slot = v;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Persisted state for one plugin, keyed by [`HostPlugin::name`] in the user's
+/// settings file.
+///
+/// Entries whose plugin is not loaded are kept verbatim and never applied, so
+/// installing a plugin later — or running a build that ships fewer of them —
+/// restores rather than forgets its configuration.
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct PluginSettings {
+    /// Whether hooks fire for this plugin.
+    pub enabled: bool,
+    /// Whether the plugin's window is open.
+    pub window_open: bool,
+    /// Opaque blob from [`HostPlugin::save_settings`].
+    pub config: Option<String>,
+}
+
+impl Default for PluginSettings {
+    fn default() -> Self {
+        // Matches a freshly loaded plugin: enabled, window closed.
+        Self {
+            enabled: true,
+            window_open: false,
+            config: None,
+        }
     }
 }
 
@@ -697,23 +768,68 @@ impl PluginManager {
         let Some(path) = self.plugins.get(idx).map(|p| p.path.clone()) else {
             return Ok(());
         };
-        // Remember open windows by plugin name to restore them after reload.
-        let open: Vec<(String, bool)> = self
+        // Carry enabled/window/config across the unload: a reload is for
+        // iterating on a `.so`, not a reset button.
+        let mut saved: BTreeMap<String, PluginSettings> = self
             .plugins
             .iter()
             .filter(|p| p.path == path)
-            .map(|p| (p.name.clone(), p.window_open))
+            .map(|p| (p.name.clone(), Self::snapshot_of(p)))
             .collect();
         self.plugins.retain(|p| p.path != path);
         self.load_file(&path)?;
+        self.apply_settings(&mut saved);
+        Ok(())
+    }
+
+    /// Apply persisted state to the loaded plugins.
+    ///
+    /// A name with no entry keeps the load-time defaults. An entry naming a
+    /// plugin that is not loaded is left untouched — it may belong to one
+    /// installed later. A config blob the plugin rejects (or panics on) is
+    /// removed from `saved`, reverting that plugin to its own defaults; the
+    /// enabled/window flags still apply, since those are the host's, not the
+    /// plugin's, and cannot go stale.
+    pub fn apply_settings(&mut self, saved: &mut BTreeMap<String, PluginSettings>) {
         for p in &mut self.plugins {
-            if p.path == path
-                && let Some((_, was)) = open.iter().find(|(n, _)| n == &p.name)
-            {
-                p.window_open = *was;
+            let Some(s) = saved.get_mut(&p.name) else {
+                continue;
+            };
+            p.enabled = s.enabled;
+            p.window_open = s.window_open;
+            if let Some(cfg) = &s.config {
+                let name = p.name.clone();
+                let ok = Self::guarded(&mut p.error, &name, || p.plugin.load_settings(cfg));
+                if ok != Some(true) {
+                    s.config = None;
+                }
             }
         }
-        Ok(())
+    }
+
+    /// Current persisted state of every loaded plugin, keyed by name. Says
+    /// nothing about plugins that are not loaded, so merging this into the
+    /// stored map preserves their entries.
+    pub fn settings_snapshot(&self) -> BTreeMap<String, PluginSettings> {
+        self.plugins
+            .iter()
+            .map(|p| (p.name.clone(), Self::snapshot_of(p)))
+            .collect()
+    }
+
+    /// One plugin's persisted state. `save_settings` runs under
+    /// `catch_unwind` like every other hook: a panicking plugin loses its
+    /// config for this write, never the session.
+    fn snapshot_of(p: &Loaded) -> PluginSettings {
+        let config =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| p.plugin.save_settings()))
+                .ok()
+                .flatten();
+        PluginSettings {
+            enabled: p.enabled,
+            window_open: p.window_open,
+            config,
+        }
     }
 }
 
@@ -808,6 +924,8 @@ mod tests {
     struct Recorder {
         log: Arc<Mutex<Vec<String>>>,
         panic_on_snapshot: bool,
+        /// Persisted blob, in this plugin's own `v1:` format.
+        cfg: String,
     }
 
     impl HostPlugin for Recorder {
@@ -849,6 +967,18 @@ mod tests {
             self.log.lock().push(format!("ctx:{id}"));
             Vec::new()
         }
+        fn save_settings(&self) -> Option<String> {
+            (!self.cfg.is_empty()).then(|| self.cfg.clone())
+        }
+        /// Only understands the `v1:` format — anything else is a blob from a
+        /// build this plugin no longer matches.
+        fn load_settings(&mut self, data: &str) -> bool {
+            let ok = data.starts_with("v1:");
+            if ok {
+                self.cfg = data.to_string();
+            }
+            ok
+        }
     }
 
     /// Push a `Recorder` directly, bypassing the `.so` load path, so hook logic
@@ -860,6 +990,7 @@ mod tests {
         let mut plugin = Recorder {
             log: log.clone(),
             panic_on_snapshot,
+            cfg: String::new(),
         };
         plugin.init(host);
         mgr.plugins.push(Loaded {
@@ -919,5 +1050,55 @@ mod tests {
         let (mgr, _log) = with_recorder(false);
         let entries = &mgr.infos()[0].menu_entries;
         assert_eq!(entries, &[("greet".to_string(), "Greet".to_string())]);
+    }
+
+    #[test]
+    fn settings_apply_skip_unknown_and_revert_stale() {
+        let mut saved: BTreeMap<String, PluginSettings> = [
+            (
+                "Recorder".to_string(),
+                PluginSettings {
+                    enabled: false,
+                    window_open: true,
+                    config: Some("v1:hello".into()),
+                },
+            ),
+            // A plugin that is not installed in this build.
+            (
+                "Future Plugin".to_string(),
+                PluginSettings {
+                    enabled: false,
+                    window_open: true,
+                    config: Some("whatever".into()),
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let (mut mgr, _log) = with_recorder(false);
+        mgr.apply_settings(&mut saved);
+
+        // Host-owned flags and the plugin's own blob both applied.
+        let info = &mgr.infos()[0];
+        assert!(!info.enabled);
+        assert!(info.window_open);
+        assert_eq!(
+            mgr.settings_snapshot()["Recorder"].config.as_deref(),
+            Some("v1:hello")
+        );
+        // The entry for the absent plugin is untouched, not dropped.
+        assert_eq!(saved["Future Plugin"].config.as_deref(), Some("whatever"));
+
+        // A blob the plugin no longer understands is discarded, and the flags
+        // still apply — the plugin falls back to its own defaults.
+        let mut stale = saved.clone();
+        stale.get_mut("Recorder").unwrap().config = Some("v0:junk".into());
+        stale.get_mut("Recorder").unwrap().enabled = true;
+        let (mut mgr, _log) = with_recorder(false);
+        mgr.apply_settings(&mut stale);
+        assert_eq!(stale["Recorder"].config, None);
+        assert!(mgr.infos()[0].enabled);
+        assert_eq!(mgr.settings_snapshot()["Recorder"].config, None);
     }
 }

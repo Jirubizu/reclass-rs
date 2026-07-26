@@ -72,6 +72,10 @@ pub(super) struct Settings {
     /// userspace syscalls. The driver must be loaded for this to take effect;
     /// enabling it when unavailable shows a popup and reverts.
     pub(super) use_kernel: bool,
+    /// Per-plugin persisted state, keyed by plugin name. Entries for plugins
+    /// that are not loaded are kept and skipped, so uninstalling a plugin — or
+    /// running a build that ships fewer of them — does not forget its setup.
+    pub(super) plugins: std::collections::BTreeMap<String, crate::plugin::PluginSettings>,
 }
 
 impl Default for Settings {
@@ -86,6 +90,7 @@ impl Default for Settings {
             array_cap: 256,
             mcp_enabled: false,
             mcp_port: 3900,
+            plugins: std::collections::BTreeMap::new(),
         }
     }
 }

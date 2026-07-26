@@ -9,17 +9,21 @@ const BYTES_PER_ROW: usize = 16;
 /// Maximum bytes to fetch.
 const MAX_BYTES: usize = 4096;
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct HexDump {
     /// Address as a hex string (e.g. "7ff80000").
     addr_input: String,
     /// Number of rows to show.
     rows_input: String,
     /// Fetched bytes from the last request.
+    #[serde(skip)]
     bytes: Vec<u8>,
     /// First address of the fetched range.
+    #[serde(skip)]
     base: u64,
     /// Error from the last read attempt, if any.
+    #[serde(skip)]
     error: Option<String>,
 }
 
@@ -118,5 +122,12 @@ impl HostPlugin for HexDump {
                         });
                 }
             });
+    }
+
+    fn save_settings(&self) -> Option<String> {
+        save_json(self)
+    }
+    fn load_settings(&mut self, data: &str) -> bool {
+        load_json(self, data)
     }
 }

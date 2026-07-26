@@ -278,6 +278,11 @@ impl ReClassApp {
         for dir in plugin_dirs {
             app.plugins.load_dir(&dir);
         }
+        // Restore per-plugin state (enabled, window, config). Entries naming a
+        // plugin that did not load stay in `settings.plugins` untouched.
+        let mut saved = std::mem::take(&mut app.settings.plugins);
+        app.plugins.apply_settings(&mut saved);
+        app.settings.plugins = saved;
         if let Some(pid) = initial_pid {
             app.apply(Action::AttachPid(pid));
         }
@@ -709,6 +714,23 @@ impl ReClassApp {
         }
     }
 
+    /// Fold the loaded plugins' live state back into settings, persisting when
+    /// it changed. Only loaded plugins are touched, so remembered entries for
+    /// absent ones survive. Cheap no-op in the common case: a plugin with no
+    /// configuration returns `None` and nothing compares unequal.
+    fn sync_plugin_settings(&mut self) {
+        let mut changed = false;
+        for (name, snap) in self.plugins.settings_snapshot() {
+            if self.settings.plugins.get(&name) != Some(&snap) {
+                self.settings.plugins.insert(name, snap);
+                changed = true;
+            }
+        }
+        if changed {
+            self.settings.save();
+        }
+    }
+
     /// Apply every pending MCP request against live state, replying to each.
     fn drain_mcp(&mut self) {
         let Some(rt) = self.mcp.as_ref() else {
@@ -772,6 +794,7 @@ impl eframe::App for ReClassApp {
         for pa in plugin_actions {
             self.apply_plugin_action(pa);
         }
+        self.sync_plugin_settings();
         if let Some(text) = self.pending_clipboard.take() {
             ctx.copy_text(text);
         }
@@ -835,6 +858,16 @@ mod tests {
             mcp_enabled: true,
             mcp_port: 4001,
             use_kernel: true,
+            plugins: [(
+                "Hex Dump".to_string(),
+                crate::plugin::PluginSettings {
+                    enabled: false,
+                    window_open: true,
+                    config: Some("{\"addr_input\":\"dead\"}".to_string()),
+                },
+            )]
+            .into_iter()
+            .collect(),
         };
         let ron = ron::ser::to_string_pretty(&s, ron::ser::PrettyConfig::default()).unwrap();
         let back: Settings = ron::from_str(&ron).unwrap();
@@ -846,6 +879,7 @@ mod tests {
         assert_eq!(partial.default_kind, NodeKind::Hex(IntWidth::W64));
         assert_eq!(partial.array_cap, 256);
         assert!(partial.flash_enabled);
+        assert!(partial.plugins.is_empty());
     }
 
     #[test]

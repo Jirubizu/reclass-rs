@@ -397,6 +397,8 @@ impl ReClassApp {
             return;
         }
         let mut open = self.show_settings;
+        let loaded: std::collections::HashSet<String> =
+            self.plugins.infos().into_iter().map(|i| i.name).collect();
         let mut changed = false;
         egui::Window::new("Settings")
             .open(&mut open)
@@ -498,9 +500,49 @@ impl ReClassApp {
                         ui.end_row();
                     });
                 ui.separator();
+                egui::CollapsingHeader::new(format!(
+                    "Plugins ({} remembered)",
+                    self.settings.plugins.len()
+                ))
+                .show(ui, |ui| {
+                    if self.settings.plugins.is_empty() {
+                        ui.weak("Nothing remembered yet — plugin state is saved as you change it.");
+                    }
+                    // Only unloaded entries get a Forget button: forgetting a
+                    // loaded plugin would be undone by the next sync.
+                    let mut forget = None;
+                    for (name, s) in &self.settings.plugins {
+                        ui.horizontal(|ui| {
+                            ui.weak(if s.enabled { "on " } else { "off" });
+                            ui.label(name);
+                            if s.config.is_some() {
+                                ui.weak("· config");
+                            }
+                            if !loaded.contains(name) {
+                                ui.weak("· not loaded");
+                                if ui.small_button("Forget").clicked() {
+                                    forget = Some(name.clone());
+                                }
+                            }
+                        });
+                    }
+                    if let Some(name) = forget {
+                        self.settings.plugins.remove(&name);
+                        changed = true;
+                    }
+                    ui.weak("Enable/disable and open windows in View → Plugins.");
+                    ui.weak("Entries for plugins that are not installed are kept, not applied.");
+                });
+                ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("Reset to defaults").clicked() {
-                        self.settings = Settings::default();
+                        // A settings reset is not a plugin uninstall: keep the
+                        // remembered per-plugin state.
+                        let plugins = std::mem::take(&mut self.settings.plugins);
+                        self.settings = Settings {
+                            plugins,
+                            ..Settings::default()
+                        };
                         changed = true;
                     }
                     ui.weak(format!("saved to {}", settings_file().display()));

@@ -10,13 +10,16 @@ use std::path::PathBuf;
 
 use reclass::plugin::*;
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct AutoAttach {
     /// Process name to look for (from `/proc/<pid>/comm`).
     target: String,
     /// Avoid spamming the attach action — only emit when the pid changes.
+    #[serde(skip)]
     last_seen_pid: Option<i32>,
     /// Throttle: skip this many ticks between /proc scans.
+    #[serde(skip)]
     throttle: u32,
 }
 
@@ -66,6 +69,13 @@ impl HostPlugin for AutoAttach {
                     ui.label("Enter a process name to auto-attach.");
                 }
             });
+    }
+
+    fn save_settings(&self) -> Option<String> {
+        save_json(self)
+    }
+    fn load_settings(&mut self, data: &str) -> bool {
+        load_json(self, data)
     }
 }
 

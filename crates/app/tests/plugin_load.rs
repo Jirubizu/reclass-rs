@@ -4,10 +4,11 @@
 //! actually round-trips a `dyn HostPlugin`.
 #![cfg(feature = "gui")]
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 
-use reclass::plugin::{AppState, PluginError, PluginManager};
+use reclass::plugin::{AppState, PluginError, PluginManager, PluginSettings};
 
 /// Platform library file name for the reference plugin crate.
 fn plugin_lib_name() -> &'static str {
@@ -147,7 +148,60 @@ fn loads_official_bundle_with_all_plugins() {
     assert!(mgr.on_snapshot(&[], &state).is_empty());
     assert!(mgr.on_pre_apply(&state).is_empty());
 
-    // Reload the bundle — replaces all 8 plugins with fresh instances.
+    // Persisted state round-trips through the real plugins: a blob they
+    // accept is applied and handed straight back.
+    let mut saved: BTreeMap<String, PluginSettings> = [
+        (
+            "Auto-attach".to_string(),
+            PluginSettings {
+                enabled: true,
+                window_open: true,
+                config: Some(r#"{"target":"mygame"}"#.to_string()),
+            },
+        ),
+        // Wrong type for `addr_input` — a blob from an incompatible build.
+        (
+            "Hex Dump".to_string(),
+            PluginSettings {
+                enabled: false,
+                window_open: false,
+                config: Some(r#"{"addr_input":42}"#.to_string()),
+            },
+        ),
+        // Not in this bundle; must survive untouched for a later install.
+        (
+            "Not Installed".to_string(),
+            PluginSettings {
+                enabled: false,
+                window_open: true,
+                config: Some("opaque".to_string()),
+            },
+        ),
+    ]
+    .into_iter()
+    .collect();
+    mgr.apply_settings(&mut saved);
+
+    let snap = mgr.settings_snapshot();
+    assert_eq!(
+        snap["Auto-attach"].config.as_deref(),
+        Some(r#"{"target":"mygame"}"#)
+    );
+    assert!(snap["Auto-attach"].window_open);
+    // The rejected blob is dropped, and Hex Dump is back on its defaults.
+    assert_eq!(saved["Hex Dump"].config, None);
+    assert_eq!(
+        snap["Hex Dump"].config.as_deref(),
+        Some(r#"{"addr_input":"","rows_input":""}"#)
+    );
+    assert!(!snap["Hex Dump"].enabled);
+    // Host-owned flags still applied despite the bad blob, and the unknown
+    // entry is neither applied nor forgotten.
+    assert!(!snap.contains_key("Not Installed"));
+    assert_eq!(saved["Not Installed"].config.as_deref(), Some("opaque"));
+
+    // Reload the bundle — replaces all 8 plugins with fresh instances, and
+    // carries their state across rather than resetting it.
     mgr.reload(0).expect("reload bundle");
     let after = mgr.infos();
     assert_eq!(after.len(), 8);
@@ -155,6 +209,12 @@ fn loads_official_bundle_with_all_plugins() {
         after.iter().filter(|i| i.name == "Pointer Summary").count(),
         1
     );
+    let after_snap = mgr.settings_snapshot();
+    assert_eq!(
+        after_snap["Auto-attach"].config.as_deref(),
+        Some(r#"{"target":"mygame"}"#)
+    );
+    assert!(!after_snap["Hex Dump"].enabled);
 }
 
 /// Compile `src` as a standalone cdylib with plain `rustc` — deliberately not

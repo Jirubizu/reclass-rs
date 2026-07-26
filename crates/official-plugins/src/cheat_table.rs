@@ -32,13 +32,16 @@ fn escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct CheatTableExporter {
     /// Path for the output .CT file.
     path: String,
     /// Rows from the last snapshot (for export).
+    #[serde(skip)]
     last_rows: Vec<CeRow>,
     /// Outcome of the last export, shown in the window.
+    #[serde(skip)]
     status: Option<Result<String, String>>,
 }
 
@@ -136,6 +139,13 @@ impl HostPlugin for CheatTableExporter {
                         }
                     });
             });
+    }
+
+    fn save_settings(&self) -> Option<String> {
+        save_json(self)
+    }
+    fn load_settings(&mut self, data: &str) -> bool {
+        load_json(self, data)
     }
 }
 

@@ -5,6 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use reclass::plugin::*;
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ScheduledSampler {
     /// Output directory for saved projects.
     dir: String,
@@ -13,6 +15,7 @@ pub struct ScheduledSampler {
     /// Whether sampling is active.
     enabled: bool,
     /// Running tick counter.
+    #[serde(skip)]
     tick: u64,
 }
 
@@ -89,5 +92,19 @@ impl HostPlugin for ScheduledSampler {
                     ));
                 }
             });
+    }
+
+    fn save_settings(&self) -> Option<String> {
+        save_json(self)
+    }
+    fn load_settings(&mut self, data: &str) -> bool {
+        if !load_json(self, data) {
+            return false;
+        }
+        // Deserializing writes `interval` directly, bypassing `set_interval`;
+        // re-run the clamp so a hand-edited or older blob cannot leave 0 here
+        // for the `is_multiple_of` divide.
+        self.set_interval(self.interval);
+        true
     }
 }

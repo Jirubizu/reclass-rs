@@ -45,15 +45,21 @@ impl HostPlugin for HexDump {
             .open(open)
             .resizable(true)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Address (hex):");
-                    ui.text_edit_singleline(&mut self.addr_input);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Rows:");
-                    ui.text_edit_singleline(&mut self.rows_input);
-                });
-                if ui.button("Read").clicked() || self.bytes.is_empty() {
+                egui::Grid::new("hexdump_inputs")
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        ui.label("Address (hex):");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.addr_input).desired_width(200.0),
+                        );
+                        ui.end_row();
+                        ui.label("Rows:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.rows_input).desired_width(200.0),
+                        );
+                        ui.end_row();
+                    });
+                if ui.button("Read").clicked() {
                     self.error = None;
                     let addr: u64 =
                         u64::from_str_radix(self.addr_input.trim_start_matches("0x"), 16)
@@ -81,17 +87,15 @@ impl HostPlugin for HexDump {
                 } else if !self.bytes.is_empty() {
                     ui.label(format!("0x{:X} — {} bytes:", self.base, self.bytes.len()));
                     ui.separator();
-                    egui::ScrollArea::vertical()
-                        .max_height(400.0)
+                    egui::ScrollArea::both()
+                        .auto_shrink([false; 2])
                         .show(ui, |ui| {
-                            ui.set_min_width(640.0);
-                            // Column header
-                            ui.monospace("Offset    ");
+                            let mut header = format!("{:<8}  ", "Offset");
                             for i in 0..BYTES_PER_ROW {
-                                ui.monospace(format!("{:>2X} ", i));
+                                header.push_str(&format!("{i:02X} "));
                             }
-                            ui.monospace(" ASCII");
-                            ui.end_row();
+                            header.push_str(" ASCII");
+                            ui.monospace(header);
 
                             for (row, chunk) in self.bytes.chunks(BYTES_PER_ROW).enumerate() {
                                 let offset = self.base + row as u64 * BYTES_PER_ROW as u64;

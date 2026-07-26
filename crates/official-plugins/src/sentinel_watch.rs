@@ -77,6 +77,7 @@ impl HostPlugin for SentinelWatch {
         egui::Window::new("Sentinel Watch")
             .open(open)
             .resizable(true)
+            .default_size([560.0, 420.0])
             .show(ctx, |ui| {
                 ui.label(format!(
                     "{} sentinel{} active",
@@ -100,11 +101,16 @@ impl HostPlugin for SentinelWatch {
                 if self.sentinels.is_empty() {
                     ui.label("No sentinels. Right-click a row → 'Mark as sentinel'.");
                 } else {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for s in self.sentinels.values() {
-                            ui.label(format!("{}:{} = {}", s.class_name, s.node_name, s.expected));
-                        }
-                    });
+                    egui::ScrollArea::both()
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| {
+                            for s in self.sentinels.values() {
+                                ui.label(format!(
+                                    "{}:{} = {}",
+                                    s.class_name, s.node_name, s.expected
+                                ));
+                            }
+                        });
                 }
             });
     }

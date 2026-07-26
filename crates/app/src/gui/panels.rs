@@ -248,6 +248,9 @@ impl ReClassApp {
                 let filter = self.proc_filter.to_lowercase();
                 egui::ScrollArea::vertical()
                     .max_height(220.0)
+                    // Fill the panel width: the default shrinks to the widest
+                    // row, which parks the scrollbar mid-panel.
+                    .auto_shrink([false, true])
                     .id_salt("procs")
                     .show(ui, |ui| {
                         for p in self
@@ -277,6 +280,7 @@ impl ReClassApp {
                 });
                 let ids = self.state.project.registry.ids();
                 egui::ScrollArea::vertical()
+                    .auto_shrink([false, true])
                     .id_salt("classes")
                     .show(ui, |ui| {
                         for (i, id) in ids.iter().enumerate() {
@@ -367,27 +371,34 @@ impl ReClassApp {
         let mut open = self.show_memory_map;
         egui::Window::new("Memory map")
             .open(&mut open)
+            // A definite size is what makes `auto_shrink([false, …])` safe: an
+            // auto-sized window has screen-sized available space, so a scroll
+            // area told not to shrink would stretch the window to the display.
+            .default_size([700.0, 460.0])
+            .resizable(true)
             .show(ctx, |ui| {
                 ui.label(format!("{} regions", self.state.regions.len()));
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    egui::Grid::new("maps")
-                        .num_columns(4)
-                        .striped(true)
-                        .show(ui, |ui| {
-                            ui.strong("Start");
-                            ui.strong("End");
-                            ui.strong("Perms");
-                            ui.strong("Path");
-                            ui.end_row();
-                            for r in &self.state.regions {
-                                ui.monospace(format!("0x{:012X}", r.start));
-                                ui.monospace(format!("0x{:012X}", r.end));
-                                ui.monospace(r.perms.to_string());
-                                ui.label(r.path.as_deref().unwrap_or(""));
+                egui::ScrollArea::both()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        egui::Grid::new("maps")
+                            .num_columns(4)
+                            .striped(true)
+                            .show(ui, |ui| {
+                                ui.strong("Start");
+                                ui.strong("End");
+                                ui.strong("Perms");
+                                ui.strong("Path");
                                 ui.end_row();
-                            }
-                        });
-                });
+                                for r in &self.state.regions {
+                                    ui.monospace(format!("0x{:012X}", r.start));
+                                    ui.monospace(format!("0x{:012X}", r.end));
+                                    ui.monospace(r.perms.to_string());
+                                    ui.label(r.path.as_deref().unwrap_or(""));
+                                    ui.end_row();
+                                }
+                            });
+                    });
             });
         self.show_memory_map = open;
     }
@@ -598,6 +609,8 @@ impl ReClassApp {
         let mut regen = self.codegen_cache.is_empty();
         egui::Window::new("Code generation")
             .open(&mut open)
+            .default_size([760.0, 560.0])
+            .resizable(true)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     for (label, lang) in [
@@ -620,13 +633,15 @@ impl ReClassApp {
                 if regen {
                     self.codegen_cache = self.state.codegen(self.codegen_lang);
                 }
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.codegen_cache.as_str())
-                            .code_editor()
-                            .desired_width(f32::INFINITY),
-                    );
-                });
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.codegen_cache.as_str())
+                                .code_editor()
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
             });
         self.show_codegen = open;
     }

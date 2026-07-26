@@ -64,6 +64,10 @@ impl HostPlugin for PointerSummary {
         egui::Window::new("Pointer Summary")
             .open(open)
             .resizable(true)
+            // A definite size is what makes `auto_shrink([false, …])` safe:
+            // an auto-sized window has screen-sized available space, so a
+            // scroll area told not to shrink stretches it to the display.
+            .default_size([560.0, 420.0])
             .show(ctx, |ui| {
                 if self.lines.is_empty() {
                     ui.label("No ClassPtr rows in the current snapshot.");
@@ -74,11 +78,13 @@ impl HostPlugin for PointerSummary {
                         if self.lines.len() == 1 { "" } else { "s" }
                     ));
                     ui.separator();
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for line in &self.lines {
-                            ui.label(line);
-                        }
-                    });
+                    egui::ScrollArea::both()
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| {
+                            for line in &self.lines {
+                                ui.label(line);
+                            }
+                        });
                 }
             });
     }

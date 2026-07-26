@@ -102,6 +102,7 @@ impl HostPlugin for StructureDiff {
         egui::Window::new("Structure Diff")
             .open(open)
             .resizable(true)
+            .default_size([620.0, 440.0])
             .show(ctx, |ui| {
                 ui.checkbox(&mut self.enabled, "Track changes");
                 if let Some((_, label)) = &self.before {
@@ -119,11 +120,13 @@ impl HostPlugin for StructureDiff {
                     ui.label("Capturing baseline on next snapshot…");
                 } else {
                     ui.label(format!("{} change(s):", self.diffs.len()));
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for line in &self.diffs {
-                            ui.label(line);
-                        }
-                    });
+                    egui::ScrollArea::both()
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| {
+                            for line in &self.diffs {
+                                ui.label(line);
+                            }
+                        });
                 }
             });
     }

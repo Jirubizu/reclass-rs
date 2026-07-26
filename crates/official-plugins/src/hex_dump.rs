@@ -48,6 +48,10 @@ impl HostPlugin for HexDump {
         egui::Window::new("Hex Dump")
             .open(open)
             .resizable(true)
+            // A definite size is what makes `auto_shrink([false, …])` below
+            // safe: an auto-sized window has screen-sized available space, so
+            // a scroll area told not to shrink stretches it to the display.
+            .default_size([640.0, 520.0])
             .show(ctx, |ui| {
                 egui::Grid::new("hexdump_inputs")
                     .num_columns(2)

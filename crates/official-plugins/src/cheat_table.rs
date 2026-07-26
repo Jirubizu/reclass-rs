@@ -101,6 +101,7 @@ impl HostPlugin for CheatTableExporter {
         egui::Window::new("Cheat Table Exporter")
             .open(open)
             .resizable(true)
+            .default_size([620.0, 460.0])
             .show(ctx, |ui| {
                 ui.label(format!("{} scalar rows captured", self.last_rows.len()));
                 ui.label("Output path:");
@@ -126,8 +127,8 @@ impl HostPlugin for CheatTableExporter {
                     }
                     None => {}
                 }
-                egui::ScrollArea::vertical()
-                    .max_height(300.0)
+                egui::ScrollArea::both()
+                    .auto_shrink([false; 2])
                     .show(ui, |ui| {
                         for r in &self.last_rows {
                             ui.horizontal(|ui| {

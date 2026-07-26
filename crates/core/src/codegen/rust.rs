@@ -33,6 +33,9 @@ pub(super) fn emit_rust_struct(reg: &ClassRegistry, class: &Class, out: &mut Str
             &mut used,
         );
         let ty = rust_type(reg, &node.kind);
+        if let Some(note) = super::enum_note(&node.kind) {
+            let _ = writeln!(out, "    // enum: {note}");
+        }
         if !node.comment.is_empty() {
             let _ = writeln!(out, "    // {}", node.comment);
         }
@@ -51,11 +54,16 @@ fn rust_type(reg: &ClassRegistry, kind: &NodeKind) -> String {
         NodeKind::Vec2 => "[f32; 2]".into(),
         NodeKind::Vec3 => "[f32; 3]".into(),
         NodeKind::Vec4 => "[f32; 4]".into(),
+        NodeKind::Enum { width, .. } | NodeKind::Bitfield(width) => format!("u{}", width.bits()),
         NodeKind::Text { encoding, len } => match encoding {
             TextEncoding::Utf8 => format!("[u8; {len}]"),
             TextEncoding::Utf16 => format!("[u16; {len}]"),
         },
         NodeKind::Pointer | NodeKind::FunctionPtr => "*mut u8".into(),
+        NodeKind::PtrText { encoding, .. } => match encoding {
+            TextEncoding::Utf8 => "*mut u8".into(),
+            TextEncoding::Utf16 => "*mut u16".into(),
+        },
         NodeKind::Array { element, count } => {
             format!("[{}; {count}]", rust_type(reg, element))
         }

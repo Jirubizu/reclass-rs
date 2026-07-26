@@ -180,6 +180,10 @@ struct ReClassApp {
     sel_anchor: Option<usize>,
     array_elem: usize,
     array_count: usize,
+    /// Draft enum-variant table for the Type menu's `Enum…` editor.
+    enum_text: String,
+    /// Draft enum storage width for the same editor.
+    enum_width: reclass_core::IntWidth,
     selected_classes: std::collections::HashSet<ClassId>,
     class_anchor: Option<usize>,
     renaming_class: Option<ClassRename>,
@@ -245,6 +249,8 @@ impl ReClassApp {
             sel_anchor: None,
             array_elem: 0,
             array_count: 8,
+            enum_text: String::new(),
+            enum_width: reclass_core::IntWidth::W32,
             selected_classes: std::collections::HashSet::new(),
             class_anchor: None,
             renaming_class: None,

@@ -177,6 +177,10 @@ struct Frame {
     /// Bytes successfully read from the start of `buf` (partial reads tolerated).
     readable_len: usize,
     children: HashMap<Vec<PathSeg>, usize>,
+    /// Fixed read length for a frame that holds raw bytes rather than a class
+    /// (a `PtrText` target). `class_id` is meaningless on such a frame: it is
+    /// never formatted as a class and never discovers children.
+    text_len: Option<usize>,
 }
 
 struct DiscSpec {
@@ -184,6 +188,7 @@ struct DiscSpec {
     ptr_path: Vec<PathSeg>,
     class_id: ClassId,
     target: u64,
+    text_len: Option<usize>,
 }
 
 struct Ctx<'a> {
@@ -352,6 +357,7 @@ impl Engine {
                 readable: false,
                 readable_len: 0,
                 children: HashMap::new(),
+                text_len: None,
             });
         }
 
@@ -391,6 +397,7 @@ impl Engine {
                     readable: false,
                     readable_len: 0,
                     children: HashMap::new(),
+                    text_len: spec.text_len,
                 });
                 new_wave.push(idx);
             }
@@ -447,7 +454,10 @@ impl Engine {
         // size each frame's buffer, capped so an absurd class size cannot turn
         // one tick into a multi-hundred-megabyte allocation and scan
         for &fi in wave {
-            let sz = reg.size_of(frames[fi].class_id).min(Self::MAX_CLASS_BYTES);
+            let sz = frames[fi]
+                .text_len
+                .unwrap_or_else(|| reg.size_of(frames[fi].class_id))
+                .min(Self::MAX_CLASS_BYTES);
             frames[fi].buf.resize(sz, 0);
         }
         // collect indices that actually need a read (non-empty)
@@ -546,10 +556,14 @@ fn scatter_into(backend: &dyn MemoryBackend, frames: &mut [Frame], to_read: &[us
     backend.read_scatter(&mut reqs).is_ok()
 }
 
-fn contains_class_ref(kind: &NodeKind) -> bool {
+/// Whether this kind (or an array of it) makes the engine read somewhere else,
+/// and therefore has to be walked during discovery.
+fn needs_discovery(kind: &NodeKind) -> bool {
     match kind {
-        NodeKind::ClassInstance { .. } | NodeKind::ClassPtr { .. } => true,
-        NodeKind::Array { element, .. } => contains_class_ref(element),
+        NodeKind::ClassInstance { .. } | NodeKind::ClassPtr { .. } | NodeKind::PtrText { .. } => {
+            true
+        }
+        NodeKind::Array { element, .. } => needs_discovery(element),
         _ => false,
     }
 }
@@ -557,7 +571,11 @@ fn contains_class_ref(kind: &NodeKind) -> bool {
 // -- discovery -------------------------------------------------------------
 
 fn discover_frame(frame: &Frame, ctx: &Ctx<'_>, fi: usize, out: &mut Vec<DiscSpec>) {
-    discover_class(frame, ctx, fi, frame.class_id, 0, &frame.base_path, out);
+    // A text frame holds raw string bytes, not a class: nothing to walk, and
+    // walking it would read `class_id`, which is meaningless there.
+    if frame.text_len.is_none() {
+        discover_class(frame, ctx, fi, frame.class_id, 0, &frame.base_path, out);
+    }
 }
 
 fn discover_class(
@@ -596,7 +614,7 @@ fn discover_kind(
             discover_class(frame, ctx, fi, *class_id, off, &path, out);
         }
         NodeKind::Array { element, count }
-            if contains_class_ref(element) && !ctx.expand.is_collapsed(frame.root, &path) =>
+            if needs_discovery(element) && !ctx.expand.is_collapsed(frame.root, &path) =>
         {
             let esz = element.size(ctx.reg);
             for e in 0..(*count).min(ctx.array_limit) {
@@ -612,6 +630,23 @@ fn discover_kind(
                     ptr_path: path,
                     class_id: *class_id,
                     target,
+                    text_len: None,
+                });
+            }
+        }
+        // Followed unconditionally: a `char*` whose string is not shown is
+        // just a `Pointer`, so there is nothing for an expand toggle to add.
+        NodeKind::PtrText { encoding, max } => {
+            if let Some(target) = read_u64(&frame.buf, off)
+                && target != 0
+                && *max > 0
+            {
+                out.push(DiscSpec {
+                    parent_fi: fi,
+                    ptr_path: path,
+                    class_id: frame.class_id,
+                    target,
+                    text_len: Some(encoding.bytes_for(*max)),
                 });
             }
         }
@@ -775,6 +810,27 @@ fn format_kind(
                 value: value_of(kind, slice, addr, readable, ctx),
                 hex: hex_preview(slice),
                 expandable: true,
+                ..at.base_row(root, addr, readable, kind, ctx)
+            });
+        }
+        NodeKind::PtrText { encoding, .. } => {
+            // The pointer itself renders like any pointer; the string comes from
+            // the child frame this node's discovery pass requested. A missing
+            // child means NULL or an unreadable target — show the address alone
+            // rather than an empty pair of quotes that looks like an empty string.
+            let mut value = value_of(kind, slice, addr, readable, ctx);
+            if let Some(&child_fi) = frame.children.get(&at.path) {
+                let child = &frames[child_fi];
+                if child.readable {
+                    let text =
+                        crate::node::format_text(&child.buf[..child.readable_len], *encoding);
+                    value.push_str(" -> ");
+                    value.push_str(&text);
+                }
+            }
+            out.push(Row {
+                value,
+                hex: hex_preview(slice),
                 ..at.base_row(root, addr, readable, kind, ctx)
             });
         }
@@ -1257,5 +1313,172 @@ mod pool_tests {
             "pool grew unbounded: {count} buffers for {DEPTH} frames"
         );
         assert!(capacity <= Engine::MAX_POOLED_BUFS * Engine::MAX_POOLED_BYTES);
+    }
+}
+
+#[cfg(test)]
+mod ptr_text_tests {
+    use super::*;
+    use crate::backend::MockBackend;
+    use crate::node::{IntWidth, Node, TextEncoding};
+
+    /// A class holding one `PtrText` at offset 0 and a trailing `Hex32`, so the
+    /// test also proves the pointer occupies exactly 8 bytes of layout.
+    fn setup(encoding: TextEncoding, max: usize) -> (ClassRegistry, ClassId) {
+        let mut reg = ClassRegistry::new();
+        let c = reg.add_class("S");
+        reg.push_node(c, Node::new("name", NodeKind::PtrText { encoding, max }))
+            .unwrap();
+        reg.push_node(c, Node::new("tail", NodeKind::Hex(IntWidth::W32)))
+            .unwrap();
+        (reg, c)
+    }
+
+    fn rows_of(m: &MockBackend, reg: &ClassRegistry, c: ClassId, eng: &mut Engine) -> Vec<Row> {
+        eng.snapshot(
+            m,
+            reg,
+            &[Root {
+                class_id: c,
+                base: 0x1000,
+            }],
+            &ExpandState::new(),
+            None,
+        )
+    }
+
+    #[test]
+    fn follows_the_pointer_and_shows_the_string() {
+        let (reg, c) = setup(TextEncoding::Utf8, 32);
+        let m = MockBackend::new();
+        let mut head = 0x2000u64.to_le_bytes().to_vec();
+        head.extend_from_slice(&0xAABB_CCDDu32.to_le_bytes());
+        m.put(0x1000, head);
+        let mut s = b"Player One\0".to_vec();
+        s.resize(32, 0);
+        m.put(0x2000, s);
+
+        let mut eng = Engine::new();
+        let rows = rows_of(&m, &reg, c, &mut eng);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].value, "0x2000 -> \"Player One\"");
+        // the pointer is 8 bytes of layout; the tail must sit right after it
+        assert_eq!(rows[1].offset, 8);
+        assert_eq!(rows[1].address, 0x1008);
+        // one level for the class, one batched level for every followed string
+        assert_eq!(eng.last_read_levels(), 2);
+    }
+
+    #[test]
+    fn utf16_target_is_decoded() {
+        let (reg, c) = setup(TextEncoding::Utf16, 8);
+        let m = MockBackend::new();
+        m.put(0x1000, 0x3000u64.to_le_bytes().to_vec());
+        let mut s: Vec<u8> = "Hi\u{0}"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        s.resize(16, 0);
+        m.put(0x3000, s);
+
+        let mut eng = Engine::new();
+        let rows = rows_of(&m, &reg, c, &mut eng);
+        assert_eq!(rows[0].value, "0x3000 -> \"Hi\"");
+    }
+
+    #[test]
+    fn null_pointer_reads_nothing_extra() {
+        let (reg, c) = setup(TextEncoding::Utf8, 32);
+        let m = MockBackend::new();
+        m.put(0x1000, vec![0u8; 16]);
+
+        let mut eng = Engine::new();
+        let rows = rows_of(&m, &reg, c, &mut eng);
+        assert_eq!(rows[0].value, "NULL");
+        // no second level: a NULL target must not cost a read
+        assert_eq!(eng.last_read_levels(), 1);
+    }
+
+    #[test]
+    fn unreadable_target_shows_the_address_without_empty_quotes() {
+        let (reg, c) = setup(TextEncoding::Utf8, 32);
+        let m = MockBackend::new();
+        m.put(0x1000, 0xDEAD_0000u64.to_le_bytes().to_vec());
+
+        let mut eng = Engine::new();
+        let rows = rows_of(&m, &reg, c, &mut eng);
+        assert_eq!(rows[0].value, "0xDEAD0000");
+        assert!(!rows[0].value.contains("\"\""));
+    }
+
+    #[test]
+    fn every_string_in_an_array_is_read_in_one_extra_level() {
+        let mut reg = ClassRegistry::new();
+        let c = reg.add_class("S");
+        reg.push_node(
+            c,
+            Node::new(
+                "names",
+                NodeKind::Array {
+                    element: Box::new(NodeKind::PtrText {
+                        encoding: TextEncoding::Utf8,
+                        max: 16,
+                    }),
+                    count: 3,
+                },
+            ),
+        )
+        .unwrap();
+
+        let m = MockBackend::new();
+        let mut head = Vec::new();
+        for i in 0..3u64 {
+            head.extend_from_slice(&(0x2000 + i * 0x100).to_le_bytes());
+        }
+        m.put(0x1000, head);
+        for (i, word) in ["one", "two", "three"].iter().enumerate() {
+            let mut s = word.as_bytes().to_vec();
+            s.resize(16, 0);
+            m.put(0x2000 + (i as u64) * 0x100, s);
+        }
+
+        let mut eng = Engine::new();
+        let rows = rows_of(&m, &reg, c, &mut eng);
+        let values: Vec<&str> = rows.iter().map(|r| r.value.as_str()).collect();
+        assert!(values.iter().any(|v| v.ends_with("\"one\"")), "{values:?}");
+        assert!(
+            values.iter().any(|v| v.ends_with("\"three\"")),
+            "{values:?}"
+        );
+        // all three strings batch into a single extra scatter, not one each
+        assert_eq!(eng.last_read_levels(), 2);
+    }
+
+    #[test]
+    fn a_string_target_never_recurses() {
+        // The child frame carries the parent's class id; if discovery walked it
+        // as a class, a self-referential class would loop forever.
+        let mut reg = ClassRegistry::new();
+        let c = reg.add_class("S");
+        reg.push_node(
+            c,
+            Node::new(
+                "name",
+                NodeKind::PtrText {
+                    encoding: TextEncoding::Utf8,
+                    max: 8,
+                },
+            ),
+        )
+        .unwrap();
+
+        let m = MockBackend::new();
+        // the string target points back at the class base
+        m.put(0x1000, 0x1000u64.to_le_bytes().to_vec());
+
+        let mut eng = Engine::new();
+        let rows = rows_of(&m, &reg, c, &mut eng);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(eng.last_read_levels(), 2);
     }
 }

@@ -123,6 +123,29 @@ pub(super) fn class_type_name(reg: &ClassRegistry, id: ClassId) -> String {
     }
 }
 
+/// The `name = value` table for an [`NodeKind::Enum`] node, for emission as a
+/// comment beside the field.
+///
+/// Codegen deliberately does not emit a real `enum`: the value comes from a
+/// foreign process and may be any bit pattern, and materializing an out-of-range
+/// discriminant is undefined behaviour in both Rust and C++. The field stays an
+/// integer; this note preserves the names.
+pub(super) fn enum_note(kind: &NodeKind) -> Option<String> {
+    let NodeKind::Enum { variants, .. } = kind else {
+        return None;
+    };
+    if variants.is_empty() {
+        return None;
+    }
+    Some(
+        variants
+            .iter()
+            .map(|v| format!("{} = {}", v.name, v.value))
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
 /// Claim `base`, or the first free `base_2`, `base_3`, … if it is taken.
 ///
 /// [`sanitize`] is lossy — `"a b"` and `"a-b"` both become `a_b` — so two
@@ -561,5 +584,132 @@ mod tests {
         // second module gets a suffixed variable, and the first is bound exactly once
         assert!(main.contains("mod_a_b_base_2"));
         assert_eq!(main.matches("let mod_a_b_base:").count(), 1);
+    }
+
+    /// A class exercising `Enum`, `Bitfield`, and `PtrText` in both encodings.
+    fn exotic() -> ClassRegistry {
+        use crate::node::EnumVariant;
+        let mut reg = ClassRegistry::new();
+        let c = reg.add_class("Ent");
+        reg.push_node(
+            c,
+            Node::new(
+                "state",
+                NodeKind::Enum {
+                    width: IntWidth::W32,
+                    variants: vec![
+                        EnumVariant {
+                            value: 0,
+                            name: "Idle".into(),
+                        },
+                        EnumVariant {
+                            value: 1,
+                            name: "Run".into(),
+                        },
+                    ],
+                },
+            ),
+        )
+        .unwrap();
+        reg.push_node(c, Node::new("flags", NodeKind::Bitfield(IntWidth::W16)))
+            .unwrap();
+        reg.push_node(
+            c,
+            Node::new(
+                "name",
+                NodeKind::PtrText {
+                    encoding: TextEncoding::Utf8,
+                    max: 64,
+                },
+            ),
+        )
+        .unwrap();
+        reg.push_node(
+            c,
+            Node::new(
+                "wname",
+                NodeKind::PtrText {
+                    encoding: TextEncoding::Utf16,
+                    max: 64,
+                },
+            ),
+        )
+        .unwrap();
+        reg
+    }
+
+    #[test]
+    fn enum_emits_an_integer_field_plus_a_variant_comment() {
+        let reg = exotic();
+        for (lang, field) in [
+            (Language::Rust, "pub state: u32, // 0x0"),
+            (Language::C, "uint32_t state; // 0x0"),
+        ] {
+            let code = generate(&reg, lang);
+            // never a real `enum`: a foreign process can hold any bit pattern
+            assert!(!code.contains("enum Ent"), "{lang:?}\n{code}");
+            assert!(code.contains(field), "{lang:?}\n{code}");
+            assert!(
+                code.contains("// enum: Idle = 0, Run = 1"),
+                "{lang:?}\n{code}"
+            );
+        }
+    }
+
+    #[test]
+    fn enum_with_no_variants_emits_no_empty_comment() {
+        let mut reg = ClassRegistry::new();
+        let c = reg.add_class("E");
+        reg.push_node(
+            c,
+            Node::new(
+                "v",
+                NodeKind::Enum {
+                    width: IntWidth::W8,
+                    variants: Vec::new(),
+                },
+            ),
+        )
+        .unwrap();
+        let code = generate(&reg, Language::Rust);
+        assert!(code.contains("pub v: u8"));
+        assert!(!code.contains("// enum:"), "{code}");
+    }
+
+    #[test]
+    fn bitfield_and_ptr_text_types_match_their_widths() {
+        let reg = exotic();
+        let rust = generate(&reg, Language::Rust);
+        assert!(rust.contains("pub flags: u16, // 0x4"), "{rust}");
+        assert!(rust.contains("pub name: *mut u8, // 0x6"), "{rust}");
+        assert!(rust.contains("pub wname: *mut u16, // 0xE"), "{rust}");
+
+        let c = generate(&reg, Language::C);
+        assert!(c.contains("uint16_t flags; // 0x4"), "{c}");
+        assert!(c.contains("char* name; // 0x6"), "{c}");
+        assert!(c.contains("uint16_t* wname; // 0xE"), "{c}");
+    }
+
+    #[test]
+    fn exotic_kinds_get_project_accessors() {
+        let reg = exotic();
+        let files = generate_project(&reg, "demo", None);
+        let src = files
+            .iter()
+            .find(|f| f.0.ends_with("generated.rs"))
+            .map(|f| f.1.as_str())
+            .expect("generated project has a bindings module");
+        // enum/bitfield read as their storage integer, PtrText as an address
+        assert!(src.contains("-> Result<u32, Error>"), "{src}");
+        assert!(src.contains("-> Result<u16, Error>"), "{src}");
+        assert!(src.contains("-> Result<usize, Error>"), "{src}");
+        assert!(
+            !src.contains("no accessor: `state`"),
+            "enum lost its accessor:\n{src}"
+        );
+        assert!(
+            !src.contains("no accessor: `name`"),
+            "PtrText lost its accessor:\n{src}"
+        );
     }
 }

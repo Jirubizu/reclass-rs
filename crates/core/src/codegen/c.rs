@@ -45,6 +45,9 @@ fn emit_c_struct(reg: &ClassRegistry, class: &Class, out: &mut String) {
             &c_ident(&sanitize(&node.name, || format!("field_{off:x}"))),
             &mut used,
         );
+        if let Some(note) = super::enum_note(&node.kind) {
+            let _ = writeln!(out, "    // enum: {note}");
+        }
         let decl = c_field(reg, &field, &node.kind);
         let trailing = if node.comment.is_empty() {
             format!(" // 0x{off:X}")
@@ -75,11 +78,18 @@ fn c_field(reg: &ClassRegistry, field: &str, kind: &NodeKind) -> String {
         NodeKind::Vec2 => format!("float {field}[2]"),
         NodeKind::Vec3 => format!("float {field}[3]"),
         NodeKind::Vec4 => format!("float {field}[4]"),
+        NodeKind::Enum { width, .. } | NodeKind::Bitfield(width) => {
+            format!("{} {field}", int_ty(*width, false))
+        }
         NodeKind::Text { encoding, len } => match encoding {
             TextEncoding::Utf8 => format!("char {field}[{len}]"),
             TextEncoding::Utf16 => format!("uint16_t {field}[{len}]"),
         },
         NodeKind::Pointer | NodeKind::FunctionPtr => format!("void* {field}"),
+        NodeKind::PtrText { encoding, .. } => match encoding {
+            TextEncoding::Utf8 => format!("char* {field}"),
+            TextEncoding::Utf16 => format!("uint16_t* {field}"),
+        },
         NodeKind::Array { element, count } => {
             // Append this dimension to the *declarator* before recursing, so
             // nested arrays read outside-in (`grid[5][3]` = 5 rows of 3) the

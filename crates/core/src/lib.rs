@@ -21,4 +21,4 @@ pub use backend::{MemError, MemoryBackend, Perms, Region, ScatterReq};
 pub use class::{Class, ClassId, ClassRegistry, RegistryError};
 pub use engine::{Engine, ExpandState, PathSeg, Root, Row};
 pub use expr::{AddrExpr, BinOp, ExprError};
-pub use node::{AddrInfo, EditErr, FmtCtx, IntWidth, Node, NodeKind, TextEncoding};
+pub use node::{AddrInfo, EditErr, EnumVariant, FmtCtx, IntWidth, Node, NodeKind, TextEncoding};

@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use reclass_backend_vmem::{VmemBackend, list_processes, process_name};
 use reclass_core::codegen::Language;
-use reclass_core::{IntWidth, Node, NodeKind};
+use reclass_core::{IntWidth, Node, NodeKind, TextEncoding};
 use serde_json::{Value, json};
 
 use crate::app_state::AppState;
@@ -795,6 +795,36 @@ fn parse_kind(v: &Value) -> Result<NodeKind, String> {
             "vec2" => NodeKind::Vec2,
             "vec3" => NodeKind::Vec3,
             "vec4" => NodeKind::Vec4,
+            "bits8" => NodeKind::Bitfield(W8),
+            "bits16" => NodeKind::Bitfield(W16),
+            "bits32" => NodeKind::Bitfield(W32),
+            "bits64" => NodeKind::Bitfield(W64),
+            // An enum with no variants is still useful over a bare integer: the
+            // agent can fill the table later via the full object form.
+            "enum8" => NodeKind::Enum {
+                width: W8,
+                variants: Vec::new(),
+            },
+            "enum16" => NodeKind::Enum {
+                width: W16,
+                variants: Vec::new(),
+            },
+            "enum32" | "enum" => NodeKind::Enum {
+                width: W32,
+                variants: Vec::new(),
+            },
+            "enum64" => NodeKind::Enum {
+                width: W64,
+                variants: Vec::new(),
+            },
+            "cstr" | "charptr" => NodeKind::PtrText {
+                encoding: TextEncoding::Utf8,
+                max: 64,
+            },
+            "wcstr" | "wcharptr" => NodeKind::PtrText {
+                encoding: TextEncoding::Utf16,
+                max: 64,
+            },
             other => return Err(format!("unknown kind shorthand '{other}'")),
         };
         Ok(k)
@@ -916,5 +946,43 @@ mod tests {
         // non-ASCII must be rejected, not panic mid-codepoint (regression)
         assert!(hex_decode("😀").is_err());
         assert!(hex_decode("0xdead").unwrap() == vec![0xde, 0xad]);
+    }
+
+    #[test]
+    fn new_kind_shorthands_resolve() {
+        assert_eq!(
+            parse_kind(&json!("bits16")).unwrap(),
+            NodeKind::Bitfield(IntWidth::W16)
+        );
+        assert_eq!(
+            parse_kind(&json!("enum")).unwrap(),
+            NodeKind::Enum {
+                width: IntWidth::W32,
+                variants: Vec::new()
+            }
+        );
+        assert_eq!(
+            parse_kind(&json!("cstr")).unwrap(),
+            NodeKind::PtrText {
+                encoding: TextEncoding::Utf8,
+                max: 64
+            }
+        );
+        assert_eq!(
+            parse_kind(&json!("wcstr")).unwrap(),
+            NodeKind::PtrText {
+                encoding: TextEncoding::Utf16,
+                max: 64
+            }
+        );
+        // the object form still reaches variants a shorthand cannot express
+        let obj =
+            json!({ "Enum": { "width": "W8", "variants": [ { "value": 3, "name": "Dead" } ] } });
+        let NodeKind::Enum { width, variants } = parse_kind(&obj).unwrap() else {
+            panic!("expected an enum");
+        };
+        assert_eq!(width, IntWidth::W8);
+        assert_eq!(variants.len(), 1);
+        assert_eq!(variants[0].name, "Dead");
     }
 }

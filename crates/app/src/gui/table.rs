@@ -5,7 +5,8 @@ use eframe::egui;
 use reclass_core::{ClassId, IntWidth, NodeKind, Row};
 
 use super::widgets::{
-    array_elem_kinds, asm_size_kinds, cell_label, flow_label, mix, scalar_kinds, strip_quotes,
+    array_elem_kinds, asm_size_kinds, cell_label, flow_label, mix, parse_variants, scalar_kinds,
+    strip_quotes, variants_text,
 };
 use super::{Action, EditField, ReClassApp, col, w};
 
@@ -548,6 +549,45 @@ impl ReClassApp {
                     }
                     ui.close();
                 }
+            }
+        });
+        ui.menu_button("Enum…", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("width");
+                for (label, w) in [
+                    ("8", IntWidth::W8),
+                    ("16", IntWidth::W16),
+                    ("32", IntWidth::W32),
+                    ("64", IntWidth::W64),
+                ] {
+                    ui.selectable_value(&mut self.enum_width, w, label);
+                }
+            });
+            ui.label("one NAME = VALUE per line");
+            ui.add(
+                egui::TextEdit::multiline(&mut self.enum_text)
+                    .desired_rows(6)
+                    .desired_width(200.0)
+                    .font(egui::TextStyle::Monospace),
+            );
+            if let NodeKind::Enum { width, variants } = &row.kind
+                && ui.button("Load from this field").clicked()
+            {
+                self.enum_width = *width;
+                self.enum_text = variants_text(variants);
+            }
+            if ui.button("Apply").clicked() {
+                if let Some((cls, idx)) = owner {
+                    actions.push(Action::ChangeKind(
+                        cls,
+                        idx,
+                        NodeKind::Enum {
+                            width: self.enum_width,
+                            variants: parse_variants(&self.enum_text),
+                        },
+                    ));
+                }
+                ui.close();
             }
         });
         ui.menu_button("Class instance", |ui| {

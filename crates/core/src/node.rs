@@ -42,7 +42,7 @@ impl IntWidth {
     }
 }
 
-/// Text encoding for a [`NodeKind::Text`] node.
+/// Text encoding for a [`NodeKind::Text`] / [`NodeKind::PtrText`] node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TextEncoding {
@@ -50,6 +50,28 @@ pub enum TextEncoding {
     Utf8,
     /// Two (little-endian) bytes per code unit.
     Utf16,
+}
+
+impl TextEncoding {
+    /// Bytes occupied by `units` code units.
+    #[inline]
+    #[must_use]
+    pub fn bytes_for(self, units: usize) -> usize {
+        match self {
+            TextEncoding::Utf8 => units,
+            TextEncoding::Utf16 => units.saturating_mul(2),
+        }
+    }
+}
+
+/// One named value of a [`NodeKind::Enum`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct EnumVariant {
+    /// Numeric value as stored in memory (sign-extended to the node's width).
+    pub value: i64,
+    /// Display / codegen name.
+    pub name: String,
 }
 
 /// The type of a node — what determines its size and rendering.
@@ -68,6 +90,23 @@ pub enum NodeKind {
     Float64,
     /// Boolean (one byte; nonzero is true).
     Bool,
+    /// Integer whose value is looked up in a table of named variants.
+    ///
+    /// Not emitted as a real `enum` by codegen: a foreign process can hold any
+    /// bit pattern here, and a Rust/C++ enum with an out-of-range discriminant
+    /// is undefined behaviour to materialize. Codegen emits the underlying
+    /// integer and lists the variants as a comment.
+    Enum {
+        /// Storage width.
+        width: IntWidth,
+        /// Known values, searched in order; the first match wins.
+        variants: Vec<EnumVariant>,
+    },
+    /// Integer displayed as grouped binary, MSB first.
+    ///
+    /// Individual bits are unnamed on purpose — naming them would duplicate
+    /// the node's comment field for no layout benefit.
+    Bitfield(IntWidth),
     /// 2 × f32.
     Vec2,
     /// 3 × f32.
@@ -83,6 +122,16 @@ pub enum NodeKind {
     },
     /// Generic 8-byte pointer; the engine can annotate its target.
     Pointer,
+    /// Pointer to a NUL-terminated string, read through by the engine.
+    ///
+    /// The node itself occupies one pointer; `max` bounds how many code units
+    /// are read at the target so a garbage pointer cannot request a huge read.
+    PtrText {
+        /// Code-unit encoding at the target.
+        encoding: TextEncoding,
+        /// Maximum code units read at the target.
+        max: usize,
+    },
     /// `count` repetitions of `element`, laid out contiguously.
     Array {
         /// Element type.
@@ -309,11 +358,12 @@ impl NodeKind {
             NodeKind::Vec2 => 8,
             NodeKind::Vec3 => 12,
             NodeKind::Vec4 => 16,
-            NodeKind::Text { encoding, len } => match encoding {
-                TextEncoding::Utf8 => *len,
-                TextEncoding::Utf16 => len * 2,
-            },
-            NodeKind::Pointer | NodeKind::ClassPtr { .. } | NodeKind::FunctionPtr => 8,
+            NodeKind::Enum { width, .. } | NodeKind::Bitfield(width) => width.bytes(),
+            NodeKind::Text { encoding, len } => encoding.bytes_for(*len),
+            NodeKind::Pointer
+            | NodeKind::PtrText { .. }
+            | NodeKind::ClassPtr { .. }
+            | NodeKind::FunctionPtr => 8,
             NodeKind::Padding(n) | NodeKind::Unknown(n) => *n,
             // recursive kinds have no fixed size
             NodeKind::ClassInstance { .. } | NodeKind::Array { .. } => 0,
@@ -332,11 +382,17 @@ impl NodeKind {
             NodeKind::Vec2 => "Vec2".into(),
             NodeKind::Vec3 => "Vec3".into(),
             NodeKind::Vec4 => "Vec4".into(),
+            NodeKind::Enum { width, .. } => format!("Enum{}", width.bits()),
+            NodeKind::Bitfield(w) => format!("Bits{}", w.bits()),
             NodeKind::Text { encoding, len } => match encoding {
                 TextEncoding::Utf8 => format!("Text[{len}]"),
                 TextEncoding::Utf16 => format!("WText[{len}]"),
             },
             NodeKind::Pointer => "Ptr".into(),
+            NodeKind::PtrText { encoding, max } => match encoding {
+                TextEncoding::Utf8 => format!("Text*[{max}]"),
+                TextEncoding::Utf16 => format!("WText*[{max}]"),
+            },
             NodeKind::Array { element, count } => format!("{}[{count}]", element.label(reg)),
             NodeKind::ClassInstance { class_id } => reg.name_of(*class_id).map_or_else(
                 || format!("class#{class_id}"),
@@ -402,8 +458,16 @@ impl NodeKind {
                 fmt_float(f64::from(read_f32_at(bytes, 8))),
                 fmt_float(f64::from(read_f32_at(bytes, 12))),
             ),
+            NodeKind::Enum { width, variants } => {
+                let v = le_signed(bytes, *width);
+                match variants.iter().find(|e| e.value == v) {
+                    Some(e) => format!("{} ({v})", e.name),
+                    None => format!("{v}"),
+                }
+            }
+            NodeKind::Bitfield(w) => format_bits(bytes, *w),
             NodeKind::Text { encoding, .. } => format_text(bytes, *encoding),
-            NodeKind::Pointer | NodeKind::FunctionPtr => {
+            NodeKind::Pointer | NodeKind::FunctionPtr | NodeKind::PtrText { .. } => {
                 let target = le_unsigned(&bytes[..8.min(bytes.len())]);
                 format_ptr(target, ctx)
             }
@@ -451,10 +515,21 @@ impl NodeKind {
             NodeKind::Vec2 => parse_vec(input, 2),
             NodeKind::Vec3 => parse_vec(input, 3),
             NodeKind::Vec4 => parse_vec(input, 4),
-            NodeKind::Text { encoding, len } => Ok(encode_text(input, *encoding, *len)),
-            NodeKind::Pointer | NodeKind::ClassPtr { .. } | NodeKind::FunctionPtr => {
-                Ok(parse_addr(input)?.to_le_bytes().to_vec())
+            NodeKind::Enum { width, variants } => {
+                let t = input.trim();
+                match variants.iter().find(|e| e.name.eq_ignore_ascii_case(t)) {
+                    Some(e) => int_to_le(i128::from(e.value), *width, true),
+                    // A name that is not a known variant still has to fail as a
+                    // name, not silently write a nearby number.
+                    None => int_to_le(parse_int(input)?, *width, true),
+                }
             }
+            NodeKind::Bitfield(w) => int_to_le(parse_bits(input)?, *w, false),
+            NodeKind::Text { encoding, len } => Ok(encode_text(input, *encoding, *len)),
+            NodeKind::Pointer
+            | NodeKind::ClassPtr { .. }
+            | NodeKind::FunctionPtr
+            | NodeKind::PtrText { .. } => Ok(parse_addr(input)?.to_le_bytes().to_vec()),
             NodeKind::Array { .. }
             | NodeKind::ClassInstance { .. }
             | NodeKind::Padding(_)
@@ -483,7 +558,9 @@ fn format_ptr(target: u64, ctx: &FmtCtx<'_>) -> String {
     }
 }
 
-fn format_text(bytes: &[u8], encoding: TextEncoding) -> String {
+/// Render a NUL-terminated string from `bytes`. Shared with the engine, which
+/// formats [`NodeKind::PtrText`] from a separately-read target buffer.
+pub(crate) fn format_text(bytes: &[u8], encoding: TextEncoding) -> String {
     match encoding {
         TextEncoding::Utf8 => {
             let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
@@ -498,6 +575,45 @@ fn format_text(bytes: &[u8], encoding: TextEncoding) -> String {
             format!("\"{}\"", String::from_utf16_lossy(&units))
         }
     }
+}
+
+/// Render `width` bytes as binary, MSB first, in space-separated octets.
+///
+/// Missing bytes (a truncated read) render as zeros rather than shifting the
+/// remaining bits into the wrong column.
+fn format_bits(bytes: &[u8], width: IntWidth) -> String {
+    let v = le_unsigned(&bytes[..width.bytes().min(bytes.len())]);
+    let mut s = String::with_capacity(width.bytes() * 9);
+    for byte in (0..width.bytes()).rev() {
+        if !s.is_empty() {
+            s.push(' ');
+        }
+        let _ = write!(s, "{:08b}", (v >> (byte * 8)) as u8);
+    }
+    s
+}
+
+/// Parse a bitfield edit: binary (`0b1010`, or bare digits with separators),
+/// hex (`0x…`), or decimal.
+///
+/// Bare `10` is binary here, not decimal — the field is displayed as binary, so
+/// echoing back what is on screen has to mean the same value.
+fn parse_bits(input: &str) -> Result<i128, EditErr> {
+    let t = input.trim();
+    if t.starts_with("0x") || t.starts_with("0X") {
+        return parse_int(t);
+    }
+    let digits: String = t
+        .strip_prefix("0b")
+        .or_else(|| t.strip_prefix("0B"))
+        .unwrap_or(t)
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '_')
+        .collect();
+    if !digits.is_empty() && digits.chars().all(|c| c == '0' || c == '1') {
+        return i128::from_str_radix(&digits, 2).map_err(|_| EditErr::Parse(input.to_string()));
+    }
+    parse_int(t)
 }
 
 fn hex_dump(bytes: &[u8], max: usize) -> String {
@@ -720,5 +836,136 @@ mod tests {
                 let _ = kind.format(&vec![0u8; len], &ctx);
             }
         }
+    }
+
+    fn hp_enum() -> NodeKind {
+        NodeKind::Enum {
+            width: IntWidth::W32,
+            variants: vec![
+                EnumVariant {
+                    value: 0,
+                    name: "Idle".into(),
+                },
+                EnumVariant {
+                    value: 2,
+                    name: "Dead".into(),
+                },
+                EnumVariant {
+                    value: -1,
+                    name: "Invalid".into(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn enum_formats_known_and_unknown_values() {
+        let reg = ClassRegistry::new();
+        let c = ctx(&reg);
+        let k = hp_enum();
+        assert_eq!(k.fixed_size(), 4);
+        assert_eq!(k.format(&0i32.to_le_bytes(), &c), "Idle (0)");
+        assert_eq!(k.format(&2i32.to_le_bytes(), &c), "Dead (2)");
+        // negative variants match through sign extension, not raw bits
+        assert_eq!(k.format(&(-1i32).to_le_bytes(), &c), "Invalid (-1)");
+        // an unnamed value must still show its number, not a blank cell
+        assert_eq!(k.format(&7i32.to_le_bytes(), &c), "7");
+    }
+
+    #[test]
+    fn enum_parses_variant_names_case_insensitively_and_numbers() {
+        let k = hp_enum();
+        assert_eq!(k.parse_edit("Dead").unwrap(), 2i32.to_le_bytes());
+        assert_eq!(k.parse_edit("  dead ").unwrap(), 2i32.to_le_bytes());
+        assert_eq!(k.parse_edit("Invalid").unwrap(), (-1i32).to_le_bytes());
+        assert_eq!(k.parse_edit("7").unwrap(), 7i32.to_le_bytes());
+        assert_eq!(k.parse_edit("0x10").unwrap(), 16i32.to_le_bytes());
+        // a name that is not a variant is a parse error, not a silent zero
+        assert!(matches!(k.parse_edit("Nope"), Err(EditErr::Parse(_))));
+    }
+
+    #[test]
+    fn enum_with_no_variants_is_a_plain_integer() {
+        let reg = ClassRegistry::new();
+        let k = NodeKind::Enum {
+            width: IntWidth::W8,
+            variants: Vec::new(),
+        };
+        assert_eq!(k.format(&[200], &ctx(&reg)), "-56");
+        assert_eq!(k.parse_edit("-56").unwrap(), vec![200]);
+    }
+
+    #[test]
+    fn bitfield_formats_msb_first_in_octets() {
+        let reg = ClassRegistry::new();
+        let c = ctx(&reg);
+        assert_eq!(
+            NodeKind::Bitfield(IntWidth::W8).format(&[0b0000_1010], &c),
+            "00001010"
+        );
+        assert_eq!(
+            NodeKind::Bitfield(IntWidth::W16).format(&0x0102u16.to_le_bytes(), &c),
+            "00000001 00000010"
+        );
+        assert_eq!(NodeKind::Bitfield(IntWidth::W32).fixed_size(), 4);
+    }
+
+    #[test]
+    fn bitfield_short_read_renders_zeros_without_shifting() {
+        let reg = ClassRegistry::new();
+        let c = ctx(&reg);
+        // Only the low byte is present; the high byte must read as 0 in its own
+        // column rather than sliding the low byte left.
+        assert_eq!(
+            NodeKind::Bitfield(IntWidth::W16).format(&[0xFF], &c),
+            "00000000 11111111"
+        );
+    }
+
+    #[test]
+    fn bitfield_parses_binary_hex_and_decimal() {
+        let k = NodeKind::Bitfield(IntWidth::W8);
+        // bare digits are binary, matching what the field displays
+        assert_eq!(k.parse_edit("1010").unwrap(), vec![0b1010]);
+        assert_eq!(k.parse_edit("0b1111_0000").unwrap(), vec![0xF0]);
+        assert_eq!(k.parse_edit("0000 0011").unwrap(), vec![3]);
+        assert_eq!(k.parse_edit("0xF0").unwrap(), vec![0xF0]);
+        // a value with a digit outside {0,1} falls back to decimal
+        assert_eq!(k.parse_edit("42").unwrap(), vec![42]);
+        assert_eq!(k.parse_edit("256"), Err(EditErr::OutOfRange));
+    }
+
+    #[test]
+    fn bitfield_round_trips_through_its_own_display() {
+        let reg = ClassRegistry::new();
+        let c = ctx(&reg);
+        let k = NodeKind::Bitfield(IntWidth::W32);
+        for v in [0u32, 1, 0xDEAD_BEEF, u32::MAX] {
+            let shown = k.format(&v.to_le_bytes(), &c);
+            assert_eq!(k.parse_edit(&shown).unwrap(), v.to_le_bytes(), "{shown}");
+        }
+    }
+
+    #[test]
+    fn ptr_text_is_one_pointer_wide_and_edits_as_an_address() {
+        let reg = ClassRegistry::new();
+        let k = NodeKind::PtrText {
+            encoding: TextEncoding::Utf8,
+            max: 64,
+        };
+        assert_eq!(k.fixed_size(), 8);
+        // the node holds the pointer, so an edit writes an address here — the
+        // string lives at the target and is not editable through this field
+        let bytes = k.parse_edit("0x7fff1234").unwrap();
+        assert_eq!(u64::from_le_bytes(bytes.try_into().unwrap()), 0x7fff_1234);
+        assert_eq!(k.format(&0u64.to_le_bytes(), &ctx(&reg)), "NULL");
+    }
+
+    #[test]
+    fn utf16_ptr_text_doubles_its_read_length() {
+        assert_eq!(TextEncoding::Utf8.bytes_for(64), 64);
+        assert_eq!(TextEncoding::Utf16.bytes_for(64), 128);
+        // saturating: an absurd max must not wrap the read size to something small
+        assert_eq!(TextEncoding::Utf16.bytes_for(usize::MAX), usize::MAX);
     }
 }

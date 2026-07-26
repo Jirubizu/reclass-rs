@@ -2,7 +2,7 @@
 //! leaf, `ReClassApp`-independent pieces of the front-end.
 
 use eframe::egui;
-use reclass_core::{ClassId, IntWidth, Node, NodeKind, TextEncoding};
+use reclass_core::{ClassId, EnumVariant, IntWidth, Node, NodeKind, TextEncoding};
 
 use crate::app_state::AppState;
 
@@ -94,11 +94,65 @@ pub(super) fn scalar_kinds() -> Vec<(&'static str, NodeKind)> {
                 len: 32,
             },
         ),
+        (
+            "Text*[64]",
+            NodeKind::PtrText {
+                encoding: TextEncoding::Utf8,
+                max: 64,
+            },
+        ),
+        (
+            "WText*[64]",
+            NodeKind::PtrText {
+                encoding: TextEncoding::Utf16,
+                max: 64,
+            },
+        ),
+        ("Bits8", NodeKind::Bitfield(IntWidth::W8)),
+        ("Bits16", NodeKind::Bitfield(IntWidth::W16)),
+        ("Bits32", NodeKind::Bitfield(IntWidth::W32)),
+        ("Bits64", NodeKind::Bitfield(IntWidth::W64)),
         ("Pointer", NodeKind::Pointer),
         ("FnPtr", NodeKind::FunctionPtr),
         ("Padding[8]", NodeKind::Padding(8)),
         ("Unknown[8]", NodeKind::Unknown(8)),
     ]
+}
+
+/// Parse an enum-variant table: one `NAME = VALUE` per line, `VALUE` decimal or
+/// `0x` hex. Blank and unparseable lines are dropped rather than rejecting the
+/// whole table, so a half-typed line does not discard the rest.
+pub(super) fn parse_variants(text: &str) -> Vec<EnumVariant> {
+    text.lines()
+        .filter_map(|line| {
+            let (name, value) = line.split_once('=')?;
+            let name = name.trim();
+            let value = value.trim();
+            if name.is_empty() {
+                return None;
+            }
+            let parsed = match value
+                .strip_prefix("0x")
+                .or_else(|| value.strip_prefix("0X"))
+            {
+                Some(hex) => i64::from_str_radix(hex, 16).ok()?,
+                None => value.parse::<i64>().ok()?,
+            };
+            Some(EnumVariant {
+                value: parsed,
+                name: name.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Render an enum-variant table back to the `parse_variants` text form.
+pub(super) fn variants_text(variants: &[EnumVariant]) -> String {
+    variants
+        .iter()
+        .map(|v| format!("{} = {}", v.name, v.value))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Assembly data-size keywords as fixed-size fields: 1/2/4/8 bytes map to
@@ -128,4 +182,33 @@ pub(super) fn array_elem_kinds() -> [(&'static str, NodeKind); 8] {
         ("Float", NodeKind::Float32),
         ("Pointer", NodeKind::Pointer),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn variant_table_parses_decimal_hex_and_negatives() {
+        let v = parse_variants("Idle = 0\nRun = 0x10\nDead = -1");
+        assert_eq!(v.len(), 3);
+        assert_eq!(v[1].name, "Run");
+        assert_eq!(v[1].value, 16);
+        assert_eq!(v[2].value, -1);
+    }
+
+    #[test]
+    fn a_half_typed_line_does_not_discard_the_table() {
+        // The editor parses on every keystroke; rejecting the whole table while
+        // a line is mid-edit would make the field flicker empty.
+        let v = parse_variants("Idle = 0\nRun =\n\n  \nDead = 2\n= 5");
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[1].name, "Dead");
+    }
+
+    #[test]
+    fn variant_table_round_trips_through_its_text_form() {
+        let src = "Idle = 0\nRun = 16\nDead = -1";
+        assert_eq!(variants_text(&parse_variants(src)), src);
+    }
 }

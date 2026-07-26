@@ -379,7 +379,12 @@ fn scalar_prim(kind: &NodeKind) -> Option<(String, usize)> {
         NodeKind::Int(w) => (format!("i{}", w.bits()), w.bytes()),
         NodeKind::Float32 => ("f32".to_string(), 4),
         NodeKind::Float64 => ("f64".to_string(), 8),
-        NodeKind::Pointer | NodeKind::FunctionPtr => ("usize".to_string(), 8),
+        NodeKind::Enum { width, .. } | NodeKind::Bitfield(width) => {
+            (format!("u{}", width.bits()), width.bytes())
+        }
+        NodeKind::Pointer | NodeKind::FunctionPtr | NodeKind::PtrText { .. } => {
+            ("usize".to_string(), 8)
+        }
         _ => return None,
     })
 }

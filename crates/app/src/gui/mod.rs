@@ -19,6 +19,7 @@ use crate::plugin::{PluginAction, PluginManager};
 
 mod flash;
 mod panels;
+mod search;
 mod settings;
 mod table;
 mod widgets;
@@ -193,6 +194,13 @@ struct ReClassApp {
     enum_text: String,
     /// Draft enum storage width for the same editor.
     enum_width: reclass_core::IntWidth,
+    /// Row filter query; empty means no filtering.
+    search: String,
+    /// Goto-address input.
+    goto_input: String,
+    /// Address a goto is waiting to scroll to, resolved against the filtered
+    /// rows on the next frame.
+    goto_target: Option<u64>,
     selected_classes: std::collections::HashSet<ClassId>,
     class_anchor: Option<usize>,
     renaming_class: Option<ClassRename>,
@@ -260,6 +268,9 @@ impl ReClassApp {
             array_count: 8,
             enum_text: String::new(),
             enum_width: reclass_core::IntWidth::W32,
+            search: String::new(),
+            goto_input: String::new(),
+            goto_target: None,
             selected_classes: std::collections::HashSet::new(),
             class_anchor: None,
             renaming_class: None,

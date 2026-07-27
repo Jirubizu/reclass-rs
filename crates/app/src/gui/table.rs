@@ -4,6 +4,7 @@
 use eframe::egui;
 use reclass_core::{ClassId, IntWidth, NodeKind, Row};
 
+use super::search::{filter_rows, find_row, parse_goto};
 use super::widgets::{
     array_elem_kinds, asm_size_kinds, cell_label, flow_label, mix, parse_variants, scalar_kinds,
     strip_quotes, variants_text,
@@ -201,6 +202,45 @@ impl ReClassApp {
                     actions.push(Action::CollapseAll);
                 }
             });
+            ui.horizontal(|ui| {
+                ui.label("Find:");
+                let find = ui.add(
+                    egui::TextEdit::singleline(&mut self.search)
+                        .desired_width(220.0)
+                        .hint_text("name / type / value / comment / 0xoffset"),
+                );
+                // Ctrl+F is handled here rather than with the other shortcuts
+                // because it must work while a cell editor has focus — it is
+                // how you get *out* of one and back to searching.
+                let ctrl_f = ui.input_mut(|i| {
+                    i.consume_shortcut(&egui::KeyboardShortcut::new(
+                        egui::Modifiers::COMMAND,
+                        egui::Key::F,
+                    ))
+                });
+                if ctrl_f {
+                    find.request_focus();
+                }
+                if find.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.search.clear();
+                }
+                if !self.search.is_empty() && ui.button("✕").clicked() {
+                    self.search.clear();
+                }
+                ui.separator();
+                ui.label("Go to:");
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.goto_input)
+                        .desired_width(140.0)
+                        .hint_text("0x7ffd… or 0x1c"),
+                );
+                let submitted = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (submitted || ui.button("Go").clicked())
+                    && let Some(target) = parse_goto(&self.goto_input)
+                {
+                    self.goto_target = Some(target);
+                }
+            });
             ui.separator();
 
             // Delete key removes the selected rows (when not editing a field)
@@ -223,7 +263,8 @@ impl ReClassApp {
         actions: &mut Vec<Action>,
     ) {
         let sel = self.state.selected_view;
-        let visible: Vec<&Row> = rows.iter().filter(|r| r.root == sel).collect();
+        let all: Vec<&Row> = rows.iter().filter(|r| r.root == sel).collect();
+        let visible = filter_rows(&all, &self.search);
         let row_h = ui.spacing().interact_size.y;
 
         // header, left-aligned to the same fixed column widths
@@ -248,20 +289,49 @@ impl ReClassApp {
         ui.separator();
 
         if visible.is_empty() {
-            ui.weak("(no fields — use the Add field / Add bytes / Array controls above)");
+            if self.search.trim().is_empty() {
+                ui.weak("(no fields — use the Add field / Add bytes / Array controls above)");
+            } else {
+                ui.weak(format!(
+                    "(no field matches \"{}\" — {} hidden)",
+                    self.search.trim(),
+                    all.len()
+                ));
+            }
             return;
+        }
+        if !self.search.trim().is_empty() {
+            ui.weak(format!("{} of {} fields", visible.len(), all.len()));
+        }
+
+        // A pending goto resolves against the *filtered* rows, so jumping while
+        // a filter is on lands on the row the user can actually see.
+        let scroll_to = self
+            .goto_target
+            .take()
+            .and_then(|target| find_row(&visible, target));
+        if let Some(i) = scroll_to {
+            self.selected.clear();
+            self.selected.insert(visible[i].path.clone());
+            self.sel_anchor = Some(i);
         }
 
         // Vertically virtualized (only on-screen rows are laid out) and
         // horizontally scrollable so nothing is cut off in a narrow window.
-        egui::ScrollArea::both()
+        let mut area = egui::ScrollArea::both()
             .auto_shrink([false, false])
-            .id_salt("nodes")
-            .show_rows(ui, row_h, visible.len(), |ui, range| {
-                for i in range {
-                    self.node_row(ui, view_class, &visible, i, row_h, actions);
-                }
-            });
+            .id_salt("nodes");
+        if let Some(i) = scroll_to {
+            // Rows are uniform height under `show_rows`, so the offset of row
+            // `i` is exact; centring it keeps the surrounding fields in view.
+            let centered = (i as f32 * row_h - ui.available_height() / 2.0).max(0.0);
+            area = area.vertical_scroll_offset(centered);
+        }
+        area.show_rows(ui, row_h, visible.len(), |ui, range| {
+            for i in range {
+                self.node_row(ui, view_class, &visible, i, row_h, actions);
+            }
+        });
     }
 
     fn node_row(

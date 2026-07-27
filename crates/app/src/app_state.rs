@@ -223,6 +223,9 @@ pub struct AppState {
     expr_cache: HashMap<ClassId, (String, Result<AddrExpr, String>)>,
     /// Undo/redo snapshots.
     history: History,
+    /// Nodes copied from a class, waiting to be pasted. Owned by the model, not
+    /// the front-end, so MCP and plugin callers share one clipboard with the UI.
+    clipboard: Vec<Node>,
 }
 
 impl Default for AppState {
@@ -245,6 +248,7 @@ impl AppState {
             status: "detached".to_string(),
             expr_cache: HashMap::new(),
             history: History::default(),
+            clipboard: Vec::new(),
         }
     }
 
@@ -683,6 +687,75 @@ impl AppState {
         Some(owner)
     }
 
+    // -- clipboard ---------------------------------------------------------
+
+    /// Copy the nodes at `targets` into the clipboard, in class-then-index
+    /// order so a multi-row selection pastes back in its original layout order
+    /// regardless of how the user clicked it. Returns how many were copied.
+    ///
+    /// A stale index is skipped rather than failing the whole copy: a selection
+    /// made before an MCP call shrank the class should still copy what is left.
+    pub fn copy_nodes(&mut self, targets: &[(ClassId, usize)]) -> usize {
+        let mut t = targets.to_vec();
+        t.sort_unstable();
+        t.dedup();
+        self.clipboard = t
+            .iter()
+            .filter_map(|&(cls, idx)| self.project.registry.get(cls)?.nodes.get(idx).cloned())
+            .collect();
+        self.clipboard.len()
+    }
+
+    /// Nodes currently on the clipboard.
+    #[must_use]
+    pub fn clipboard(&self) -> &[Node] {
+        &self.clipboard
+    }
+
+    /// Insert the clipboard into `class`, after node `after` (or appended when
+    /// `None`). Returns how many nodes were inserted.
+    ///
+    /// Rejected wholesale — before any node lands — when a pasted node would
+    /// create an inline cycle, or references a class that has since been
+    /// deleted. A partial paste would leave the class in a shape the user never
+    /// asked for, and undoing it is a worse recovery than never starting.
+    pub fn paste_nodes(&mut self, class: ClassId, after: Option<usize>) -> Result<usize, AppError> {
+        if self.clipboard.is_empty() {
+            return Ok(0);
+        }
+        let reg = &self.project.registry;
+        if reg.get(class).is_none() {
+            return Err(AppError::Registry(RegistryError::NotFound(class)));
+        }
+        for node in &self.clipboard {
+            if reg.kind_would_cycle(class, &node.kind) {
+                return Err(AppError::Cycle);
+            }
+            if let Some(missing) = first_missing_ref(reg, &node.kind) {
+                return Err(AppError::Registry(RegistryError::DanglingRef {
+                    class,
+                    idx: 0,
+                    target: missing,
+                }));
+            }
+        }
+        self.snapshot();
+        let nodes = self.clipboard.clone();
+        let n = nodes.len();
+        let reg = &mut self.project.registry;
+        match after {
+            // reverse, so each insert lands before the previous one and the
+            // block keeps its order
+            Some(idx) => {
+                for node in nodes.into_iter().rev() {
+                    reg.insert_node(class, idx + 1, node)?;
+                }
+            }
+            None => reg.push_nodes(class, nodes)?,
+        }
+        Ok(n)
+    }
+
     /// Append a node to a class.
     pub fn push_node(&mut self, class: ClassId, node: Node) -> Result<(), AppError> {
         self.snapshot();
@@ -897,6 +970,21 @@ impl AppState {
         self.expr_cache.clear();
         self.history.clear();
         Ok(())
+    }
+}
+
+/// The first class id `kind` references that is no longer in `reg`, if any.
+///
+/// A node copied while its target class existed can outlive it: the registry
+/// rewrites references on `remove_class`, but a clipboard entry is outside the
+/// registry and keeps the dead id.
+fn first_missing_ref(reg: &ClassRegistry, kind: &NodeKind) -> Option<ClassId> {
+    match kind {
+        NodeKind::ClassInstance { class_id } | NodeKind::ClassPtr { class_id } => {
+            reg.get(*class_id).is_none().then_some(*class_id)
+        }
+        NodeKind::Array { element, .. } => first_missing_ref(reg, element),
+        _ => None,
     }
 }
 
@@ -1440,5 +1528,132 @@ mod tests {
         assert!(!other.can_undo());
         assert!(!other.can_redo());
         let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn copy_and_paste_moves_fields_between_classes() {
+        let mut st = AppState::new();
+        let src = st.add_class("Src");
+        st.push_node(src, Node::new("hp", NodeKind::Int(IntWidth::W32)))
+            .unwrap();
+        st.push_node(src, Node::new("mp", NodeKind::Float32))
+            .unwrap();
+        let dst = st.add_class("Dst");
+        st.push_node(dst, Node::new("head", NodeKind::Hex(IntWidth::W8)))
+            .unwrap();
+
+        assert_eq!(st.copy_nodes(&[(src, 0), (src, 1)]), 2);
+        assert_eq!(st.paste_nodes(dst, Some(0)).unwrap(), 2);
+        assert_eq!(field_names(&st, dst), ["head", "hp", "mp"]);
+        // the source is untouched — this is copy, not move
+        assert_eq!(field_names(&st, src), ["hp", "mp"]);
+        // and the kinds came across, not just the names
+        assert_eq!(
+            st.registry().get(dst).unwrap().nodes[2].kind,
+            NodeKind::Float32
+        );
+    }
+
+    #[test]
+    fn paste_appends_when_no_anchor_is_given() {
+        let mut st = AppState::new();
+        let c = st.add_class("S");
+        st.push_node(c, Node::new("a", NodeKind::Hex(IntWidth::W8)))
+            .unwrap();
+        st.copy_nodes(&[(c, 0)]);
+        st.paste_nodes(c, None).unwrap();
+        assert_eq!(field_names(&st, c), ["a", "a"]);
+    }
+
+    #[test]
+    fn a_copied_block_keeps_its_layout_order() {
+        // Selection is a HashSet, so the copy must impose order itself or a
+        // three-row block pastes back scrambled.
+        let mut st = AppState::new();
+        let c = st.add_class("S");
+        for n in ["a", "b", "c"] {
+            st.push_node(c, Node::new(n, NodeKind::Hex(IntWidth::W8)))
+                .unwrap();
+        }
+        // targets deliberately out of order
+        assert_eq!(st.copy_nodes(&[(c, 2), (c, 0), (c, 1)]), 3);
+        st.paste_nodes(c, Some(2)).unwrap();
+        assert_eq!(field_names(&st, c), ["a", "b", "c", "a", "b", "c"]);
+    }
+
+    #[test]
+    fn paste_is_one_undo_step() {
+        let mut st = AppState::new();
+        let c = st.add_class("S");
+        for n in ["a", "b", "c"] {
+            st.push_node(c, Node::new(n, NodeKind::Hex(IntWidth::W8)))
+                .unwrap();
+        }
+        st.copy_nodes(&[(c, 0), (c, 1), (c, 2)]);
+        let before = st.undo_depth();
+        st.paste_nodes(c, None).unwrap();
+        assert_eq!(st.undo_depth(), before + 1);
+        assert!(st.undo());
+        assert_eq!(field_names(&st, c), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn pasting_a_self_instance_is_refused_whole() {
+        let mut st = AppState::new();
+        let a = st.add_class("A");
+        let b = st.add_class("B");
+        st.push_node(b, Node::new("x", NodeKind::Hex(IntWidth::W8)))
+            .unwrap();
+        // Not a cycle yet: A holds nothing. B holds an inline A; copying that
+        // out of B and pasting it into A is what closes the loop.
+        st.push_node(b, Node::new("a", NodeKind::ClassInstance { class_id: a }))
+            .unwrap();
+        st.copy_nodes(&[(b, 0), (b, 1)]);
+        let before = field_names(&st, a);
+        assert!(matches!(st.paste_nodes(a, None), Err(AppError::Cycle)));
+        // nothing landed: a partial paste is worse than none
+        assert_eq!(field_names(&st, a), before);
+    }
+
+    #[test]
+    fn pasting_a_reference_to_a_deleted_class_is_refused() {
+        // The clipboard lives outside the registry, so `remove_class`'s
+        // reference rewrite cannot reach it.
+        let mut st = AppState::new();
+        let gone = st.add_class("Gone");
+        let holder = st.add_class("Holder");
+        st.push_node(
+            holder,
+            Node::new("p", NodeKind::ClassPtr { class_id: gone }),
+        )
+        .unwrap();
+        st.copy_nodes(&[(holder, 0)]);
+        st.remove_class(gone);
+
+        let dst = st.add_class("Dst");
+        assert!(matches!(
+            st.paste_nodes(dst, None),
+            Err(AppError::Registry(RegistryError::DanglingRef { .. }))
+        ));
+        assert!(field_names(&st, dst).is_empty());
+    }
+
+    #[test]
+    fn copying_a_stale_index_skips_it_instead_of_failing() {
+        let mut st = AppState::new();
+        let c = st.add_class("S");
+        st.push_node(c, Node::new("only", NodeKind::Hex(IntWidth::W8)))
+            .unwrap();
+        assert_eq!(st.copy_nodes(&[(c, 0), (c, 99), (404, 0)]), 1);
+        assert_eq!(st.clipboard()[0].name, "only");
+    }
+
+    #[test]
+    fn pasting_an_empty_clipboard_changes_nothing() {
+        let mut st = AppState::new();
+        let c = st.add_class("S");
+        let before = st.undo_depth();
+        assert_eq!(st.paste_nodes(c, None).unwrap(), 0);
+        assert_eq!(st.undo_depth(), before, "no-op must not burn an undo step");
     }
 }

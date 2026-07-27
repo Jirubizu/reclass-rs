@@ -677,6 +677,25 @@ impl ReClassApp {
             ui.close();
         }
         ui.separator();
+        if !self.selected.is_empty()
+            && ui
+                .button(format!("Copy selected ({})", self.selected.len()))
+                .clicked()
+        {
+            actions.push(Action::CopySelected);
+            ui.close();
+        }
+        let clip = self.state.clipboard().len();
+        if clip > 0 && ui.button(format!("Paste {clip} field(s) below")).clicked() {
+            if let Some((cls, idx)) = owner {
+                actions.push(Action::Paste {
+                    class: cls,
+                    after: Some(idx),
+                });
+            }
+            ui.close();
+        }
+        ui.separator();
         if ui.button("Insert Int32 below").clicked() {
             if let Some((cls, idx)) = owner {
                 actions.push(Action::InsertAfter(cls, idx, NodeKind::Int(IntWidth::W32)));

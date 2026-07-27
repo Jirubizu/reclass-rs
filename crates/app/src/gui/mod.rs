@@ -144,6 +144,13 @@ enum Action {
     InsertAfter(ClassId, usize, NodeKind),
     DeleteNode(ClassId, usize),
     DeleteSelected,
+    /// Copy the selected rows' nodes to the model clipboard.
+    CopySelected,
+    /// Paste the clipboard into `class`, after `after` (appended when `None`).
+    Paste {
+        class: ClassId,
+        after: Option<usize>,
+    },
     ChangeKind(ClassId, usize, NodeKind),
     SetArrayCount(ClassId, usize, usize),
     ExpandAll,
@@ -431,6 +438,12 @@ impl ReClassApp {
                 self.report(r);
             }
             Action::DeleteSelected => self.delete_selected(),
+            Action::CopySelected => self.copy_selected(),
+            Action::Paste { class, after } => match self.state.paste_nodes(class, after) {
+                Ok(0) => self.state.status = "clipboard is empty".into(),
+                Ok(n) => self.state.status = format!("pasted {n} field(s)"),
+                Err(e) => self.error = Some(e.to_string()),
+            },
             Action::ChangeKind(cid, idx, kind) => {
                 if let Err(e) = self.state.change_kind(cid, idx, kind) {
                     self.error = Some(e.to_string());
@@ -643,6 +656,46 @@ impl ReClassApp {
         self.sel_anchor = None;
     }
 
+    /// The `(class, index)` pairs the current row selection resolves to, in
+    /// layout order.
+    fn selected_owners(&self) -> Vec<(ClassId, usize)> {
+        let Some(view_class) = self.state.selected_class() else {
+            return Vec::new();
+        };
+        let mut owners: Vec<_> = self
+            .selected
+            .iter()
+            .filter_map(|p| self.state.resolve_owner(view_class, p))
+            .collect();
+        owners.sort_unstable();
+        owners.dedup();
+        owners
+    }
+
+    /// Copy every selected row's node to the clipboard.
+    fn copy_selected(&mut self) {
+        let targets = self.selected_owners();
+        let n = self.state.copy_nodes(&targets);
+        self.state.status = if n == 0 {
+            "nothing selected to copy".to_string()
+        } else {
+            format!("copied {n} field(s)")
+        };
+    }
+
+    /// Where `Ctrl+V` pastes: after the last selected row in the current class,
+    /// or appended when nothing in that class is selected.
+    fn paste_target(&self) -> Option<(ClassId, Option<usize>)> {
+        let class = self.state.selected_class()?;
+        let after = self
+            .selected_owners()
+            .iter()
+            .filter(|(c, _)| *c == class)
+            .map(|(_, i)| *i)
+            .max();
+        Some((class, after))
+    }
+
     /// Delete every selected node. Resolves each selected path to its owning
     /// `(class, index)`, then deletes per class in descending index order so
     /// earlier deletes don't shift later ones.
@@ -811,6 +864,9 @@ impl eframe::App for ReClassApp {
         }
 
         let mut actions: Vec<Action> = Vec::new();
+        // Resolved after the closure: `paste_target` borrows self, which the
+        // `input_mut` closure already holds mutably.
+        let mut pending_paste = false;
         // Suppressed while an inline editor has focus: Ctrl+Z there belongs to
         // the text box, and undoing the whole project mid-keystroke would drop
         // the edit being typed.
@@ -827,7 +883,18 @@ impl eframe::App for ReClassApp {
                 } else if i.consume_shortcut(&undo) {
                     actions.push(Action::Undo);
                 }
+                let copy = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C);
+                let paste = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::V);
+                if i.consume_shortcut(&copy) {
+                    actions.push(Action::CopySelected);
+                }
+                if i.consume_shortcut(&paste) {
+                    pending_paste = true;
+                }
             });
+        }
+        if pending_paste && let Some((class, after)) = self.paste_target() {
+            actions.push(Action::Paste { class, after });
         }
         self.menu_bar(ui, &mut actions);
         if self.show_side_panel {

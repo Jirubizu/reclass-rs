@@ -215,6 +215,32 @@ impl ReClassApp {
                         actions.push(Action::Redo);
                         ui.close();
                     }
+                    ui.separator();
+                    let has_sel = !self.selected.is_empty();
+                    if ui
+                        .add_enabled(
+                            has_sel,
+                            egui::Button::new("Copy fields").shortcut_text("Ctrl+C"),
+                        )
+                        .clicked()
+                    {
+                        actions.push(Action::CopySelected);
+                        ui.close();
+                    }
+                    let clip = self.state.clipboard().len();
+                    if ui
+                        .add_enabled(
+                            clip > 0,
+                            egui::Button::new(format!("Paste {clip} field(s)"))
+                                .shortcut_text("Ctrl+V"),
+                        )
+                        .clicked()
+                    {
+                        if let Some((class, after)) = self.paste_target() {
+                            actions.push(Action::Paste { class, after });
+                        }
+                        ui.close();
+                    }
                 });
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.show_side_panel, "Classes panel");

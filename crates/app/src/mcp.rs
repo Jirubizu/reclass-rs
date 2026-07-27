@@ -415,6 +415,10 @@ fn tool_defs() -> Vec<(&'static str, String, Value)> {
             obj(json!({}), json!([]))),
         ("redo", "Redo the last undone edit. Returns whether anything changed.".into(),
             obj(json!({}), json!([]))),
+        ("copy_nodes", "Copy fields to the shared clipboard. `targets` is an array of [class_id, index] pairs.".into(),
+            obj(json!({ "targets": { "type": "array" } }), json!(["targets"]))),
+        ("paste_nodes", "Paste the clipboard into `class_id`, after field `after` (appended when omitted).".into(),
+            obj(json!({ "class_id": { "type": "integer" }, "after": { "type": "integer" } }), json!(["class_id"]))),
     ]
 }
 
@@ -612,6 +616,29 @@ fn tool(state: &mut AppState, name: &str, a: &Value) -> Result<Value, String> {
         }
         "undo" => Ok(json!({ "changed": state.undo(), "depth": state.undo_depth() })),
         "redo" => Ok(json!({ "changed": state.redo(), "depth": state.undo_depth() })),
+        "copy_nodes" => {
+            let targets: Vec<(u32, usize)> = a
+                .get("targets")
+                .and_then(Value::as_array)
+                .ok_or("targets must be an array of [class_id, index] pairs")?
+                .iter()
+                .filter_map(|t| {
+                    let p = t.as_array()?;
+                    Some((
+                        u32::try_from(p.first()?.as_u64()?).ok()?,
+                        usize::try_from(p.get(1)?.as_u64()?).ok()?,
+                    ))
+                })
+                .collect();
+            Ok(json!({ "copied": state.copy_nodes(&targets) }))
+        }
+        "paste_nodes" => {
+            let after = a
+                .get("after")
+                .and_then(Value::as_u64)
+                .and_then(|v| usize::try_from(v).ok());
+            Ok(json!({ "pasted": state.paste_nodes(arg_u32(a, "class_id")?, after)? }))
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }

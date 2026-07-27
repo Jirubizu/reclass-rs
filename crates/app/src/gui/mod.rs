@@ -147,6 +147,8 @@ enum Action {
     ChangeKind(ClassId, usize, NodeKind),
     SetArrayCount(ClassId, usize, usize),
     ExpandAll,
+    Undo,
+    Redo,
     CollapseAll,
     Save(String),
     Load(String),
@@ -440,6 +442,8 @@ impl ReClassApp {
             }
             Action::ExpandAll => self.state.expand_all(),
             Action::CollapseAll => self.state.collapse_all(),
+            Action::Undo => self.time_travel(false),
+            Action::Redo => self.time_travel(true),
             Action::Save(path) => {
                 if let Err(e) = self.state.save(&path) {
                     self.error = Some(e.to_string());
@@ -603,6 +607,35 @@ impl ReClassApp {
                 }
             });
         self.show_plugins = open;
+    }
+
+    /// Step the project one edit back (`forward = false`) or forward.
+    ///
+    /// Everything the UI holds that points *into* the project — the selection
+    /// set, the inline editor, the class-rename box — is keyed by node path or
+    /// class id, and the restored project may not contain them. Clearing is the
+    /// only cheap way to keep a stale path from renaming the wrong field.
+    fn time_travel(&mut self, forward: bool) {
+        let moved = if forward {
+            self.state.redo()
+        } else {
+            self.state.undo()
+        };
+        if !moved {
+            self.state.status = if forward {
+                "nothing to redo"
+            } else {
+                "nothing to undo"
+            }
+            .into();
+            return;
+        }
+        self.clear_selection();
+        self.selected_classes.clear();
+        self.class_anchor = None;
+        self.editing = None;
+        self.renaming_class = None;
+        self.state.status = if forward { "redo" } else { "undo" }.into();
     }
 
     fn clear_selection(&mut self) {
@@ -778,6 +811,24 @@ impl eframe::App for ReClassApp {
         }
 
         let mut actions: Vec<Action> = Vec::new();
+        // Suppressed while an inline editor has focus: Ctrl+Z there belongs to
+        // the text box, and undoing the whole project mid-keystroke would drop
+        // the edit being typed.
+        if self.editing.is_none() && self.renaming_class.is_none() {
+            ctx.input_mut(|i| {
+                let undo = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z);
+                let redo = egui::KeyboardShortcut::new(
+                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                    egui::Key::Z,
+                );
+                // redo first: Ctrl+Shift+Z also satisfies Ctrl+Z's modifier test
+                if i.consume_shortcut(&redo) {
+                    actions.push(Action::Redo);
+                } else if i.consume_shortcut(&undo) {
+                    actions.push(Action::Undo);
+                }
+            });
+        }
         self.menu_bar(ui, &mut actions);
         if self.show_side_panel {
             self.side_panel(ui, &mut actions);

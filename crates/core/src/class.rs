@@ -109,14 +109,14 @@ impl PtrWidth {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Cache {
     sizes: HashMap<ClassId, usize>,
     offsets: HashMap<ClassId, Vec<usize>>,
 }
 
 /// Owns every class by id and answers size/offset queries.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ClassRegistry {
     classes: BTreeMap<ClassId, Class>,

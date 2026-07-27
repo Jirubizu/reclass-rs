@@ -129,6 +129,67 @@ impl Walk<'_> {
     }
 }
 
+/// Bounded undo/redo stack of whole-[`Project`] snapshots.
+///
+/// Snapshotting the project rather than journalling inverse operations is the
+/// only cheap way to be correct here: `remove_class` rewrites references across
+/// every other class, and `change_kind` on an array destroys its element count.
+///
+/// Bounded on two axes, because one is not enough (`benches/history.rs`):
+/// cloning a 256-class × 64-field project costs ~1.6 ms — fine once per edit,
+/// next to the ~0.2 ms of size/offset recompute the same edit already forces —
+/// but it is also ~1.7 MB, so a depth-only cap would pin ~100 MB of history for
+/// the session. [`DEPTH`](Self::DEPTH) bounds small projects, where the clone is
+/// microseconds and depth is what a user wants; [`MAX_NODES`](Self::MAX_NODES)
+/// bounds large ones, trading undo depth for memory exactly where a snapshot
+/// gets expensive.
+#[derive(Default)]
+struct History {
+    /// `(snapshot, node count)` — the count is cached so trimming does not
+    /// re-walk every retained project.
+    undo: std::collections::VecDeque<(Project, usize)>,
+    redo: Vec<(Project, usize)>,
+    /// Nodes across every snapshot in `undo`.
+    nodes: usize,
+}
+
+impl History {
+    /// Snapshots kept, whatever their size.
+    const DEPTH: usize = 64;
+
+    /// Node budget across the whole stack; the binding cap on large projects.
+    /// Roughly 50 MB at ~100 bytes per node (two `String`s plus a `NodeKind`).
+    const MAX_NODES: usize = 500_000;
+
+    /// Nodes across every class of `p`.
+    fn count_nodes(p: &Project) -> usize {
+        p.registry.iter().map(|c| c.nodes.len()).sum()
+    }
+
+    /// Record `before` as an undo point, invalidating any redo branch.
+    fn push(&mut self, before: Project) {
+        let n = Self::count_nodes(&before);
+        self.undo.push_back((before, n));
+        self.nodes += n;
+        // Always keep the newest snapshot, even if it alone blows the budget:
+        // dropping it would make the edit that just happened unundoable.
+        while self.undo.len() > 1 && (self.undo.len() > Self::DEPTH || self.nodes > Self::MAX_NODES)
+        {
+            if let Some((_, dropped)) = self.undo.pop_front() {
+                self.nodes -= dropped;
+            }
+        }
+        self.redo.clear();
+    }
+
+    /// Forget everything (a project load starts a new timeline).
+    fn clear(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+        self.nodes = 0;
+    }
+}
+
 /// Per-view resolved-base outcome for this tick.
 #[derive(Clone, Debug, Default)]
 pub struct ViewStatus {
@@ -160,6 +221,8 @@ pub struct AppState {
     /// only while its source string still matches the class's `address_expr`,
     /// so editing the expression transparently re-parses.
     expr_cache: HashMap<ClassId, (String, Result<AddrExpr, String>)>,
+    /// Undo/redo snapshots.
+    history: History,
 }
 
 impl Default for AppState {
@@ -181,7 +244,82 @@ impl AppState {
             view_status: Vec::new(),
             status: "detached".to_string(),
             expr_cache: HashMap::new(),
+            history: History::default(),
         }
+    }
+
+    // -- undo / redo -------------------------------------------------------
+
+    /// Record the current project as an undo point.
+    ///
+    /// Every public mutator calls this first. Mutators that compose (e.g.
+    /// `delete_many`) go straight to the registry instead of through their
+    /// single-item sibling, so one user action is exactly one undo step.
+    fn snapshot(&mut self) {
+        self.history.push(self.project.clone());
+    }
+
+    /// Whether there is an edit to undo.
+    #[must_use]
+    pub fn can_undo(&self) -> bool {
+        !self.history.undo.is_empty()
+    }
+
+    /// Whether there is an undone edit to redo.
+    #[must_use]
+    pub fn can_redo(&self) -> bool {
+        !self.history.redo.is_empty()
+    }
+
+    /// Depth of the undo stack (for tests and status display).
+    #[must_use]
+    pub fn undo_depth(&self) -> usize {
+        self.history.undo.len()
+    }
+
+    /// Step back one edit. Returns whether anything changed.
+    pub fn undo(&mut self) -> bool {
+        let Some((prev, nodes)) = self.history.undo.pop_back() else {
+            return false;
+        };
+        self.history.nodes -= nodes;
+        let current = std::mem::replace(&mut self.project, prev);
+        let n = History::count_nodes(&current);
+        self.history.redo.push((current, n));
+        self.resync_after_restore();
+        true
+    }
+
+    /// Step forward one undone edit. Returns whether anything changed.
+    ///
+    /// Re-entering the undo stack past its caps is allowed: the snapshot came
+    /// from that stack a moment ago, and dropping it here would strand the user
+    /// mid-timeline with no way back.
+    pub fn redo(&mut self) -> bool {
+        let Some((next, _)) = self.history.redo.pop() else {
+            return false;
+        };
+        let current = std::mem::replace(&mut self.project, next);
+        let n = History::count_nodes(&current);
+        self.history.undo.push_back((current, n));
+        self.history.nodes += n;
+        self.resync_after_restore();
+        true
+    }
+
+    /// Bring the derived, non-persisted state back in line with a restored
+    /// project: the view cursor and status vector are indexed by view position,
+    /// and a cached expression may belong to a class that no longer exists.
+    ///
+    /// Expansion state is keyed by view position and node path, both of which a
+    /// restore can invalidate, so it is dropped rather than half-applied.
+    fn resync_after_restore(&mut self) {
+        self.view_status = vec![ViewStatus::default(); self.project.views.len()];
+        self.selected_view = self
+            .selected_view
+            .min(self.project.views.len().saturating_sub(1));
+        self.expand = ExpandState::new();
+        self.expr_cache.clear();
     }
 
     /// Replace the backend (e.g. after attaching) and refresh regions.
@@ -229,6 +367,7 @@ impl AppState {
 
     /// Create a class and open it in a new view; returns its id.
     pub fn add_class(&mut self, name: impl Into<String>) -> ClassId {
+        self.snapshot();
         let id = self.project.registry.add_class(name);
         self.open_view(id);
         id
@@ -266,6 +405,7 @@ impl AppState {
     /// Remove a class and close any views showing it. References to it from
     /// other classes become dangling (rendered as `class#id`); that's allowed.
     pub fn remove_class(&mut self, id: ClassId) {
+        self.snapshot();
         self.project.registry.remove_class(id);
         self.expr_cache.remove(&id);
         if let Some(idx) = self.project.views.iter().position(|v| v.class_id == id) {
@@ -449,17 +589,23 @@ impl AppState {
         if self.project.registry.kind_would_cycle(class, &element) {
             return Err(AppError::Cycle);
         }
+        self.snapshot();
         let off = self.project.registry.size_of(class);
-        self.push_node(
-            class,
-            Node::new(
-                format!("arr_{off:X}"),
-                NodeKind::Array {
-                    element: Box::new(element),
-                    count,
-                },
-            ),
-        )
+        // straight to the registry: `push_node` would take a second snapshot
+        // and split one user action across two undo steps
+        self.project
+            .registry
+            .push_node(
+                class,
+                Node::new(
+                    format!("arr_{off:X}"),
+                    NodeKind::Array {
+                        element: Box::new(element),
+                        count,
+                    },
+                ),
+            )
+            .map_err(AppError::from)
     }
 
     /// Expand a plain `Pointer` node by creating a backing class (16 Hex64
@@ -472,6 +618,7 @@ impl AppState {
         root: usize,
         path: Vec<PathSeg>,
     ) -> Result<(), AppError> {
+        self.snapshot();
         let reg = &mut self.project.registry;
         let name = format!("Auto{}", reg.len());
         let target = reg.add_class(name);
@@ -538,6 +685,7 @@ impl AppState {
 
     /// Append a node to a class.
     pub fn push_node(&mut self, class: ClassId, node: Node) -> Result<(), AppError> {
+        self.snapshot();
         self.project
             .registry
             .push_node(class, node)
@@ -548,6 +696,7 @@ impl AppState {
     /// then `Hex8` rows for any remainder. Lets the user grow a class in bulk
     /// (e.g. 1024 bytes) instead of one field at a time.
     pub fn add_bytes(&mut self, class: ClassId, n: usize) -> Result<(), AppError> {
+        self.snapshot();
         let mut off = self.project.registry.size_of(class);
         let mut nodes = Vec::with_capacity(n.div_ceil(8));
         let mut remaining = n;
@@ -575,6 +724,7 @@ impl AppState {
 
     /// Insert a node after `idx` in `class`.
     pub fn insert_after(&mut self, class: ClassId, idx: usize, node: Node) -> Result<(), AppError> {
+        self.snapshot();
         self.project
             .registry
             .insert_node(class, idx + 1, node)
@@ -583,6 +733,7 @@ impl AppState {
 
     /// Delete node `idx` from `class`.
     pub fn delete_node(&mut self, class: ClassId, idx: usize) -> Result<(), AppError> {
+        self.snapshot();
         self.project
             .registry
             .remove_node(class, idx)
@@ -600,10 +751,12 @@ impl AppState {
         let mut t = targets.to_vec();
         t.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
         t.dedup();
+        self.snapshot();
         let mut first_err = None;
         for (cls, idx) in t {
-            if let Err(e) = self.delete_node(cls, idx) {
-                first_err.get_or_insert(e);
+            // straight to the registry: one multi-select delete is one undo step
+            if let Err(e) = self.project.registry.remove_node(cls, idx) {
+                first_err.get_or_insert(AppError::from(e));
             }
         }
         first_err.map_or(Ok(()), Err)
@@ -619,6 +772,7 @@ impl AppState {
         if self.project.registry.kind_would_cycle(class, &kind) {
             return Err(AppError::Cycle);
         }
+        self.snapshot();
         self.project
             .registry
             .set_kind(class, idx, kind)
@@ -632,6 +786,7 @@ impl AppState {
         idx: usize,
         count: usize,
     ) -> Result<(), AppError> {
+        self.snapshot();
         self.project
             .registry
             .set_array_count(class, idx, count)
@@ -645,6 +800,7 @@ impl AppState {
         idx: usize,
         name: String,
     ) -> Result<(), AppError> {
+        self.snapshot();
         self.project
             .registry
             .rename_node(class, idx, name)
@@ -658,6 +814,7 @@ impl AppState {
         idx: usize,
         comment: String,
     ) -> Result<(), AppError> {
+        self.snapshot();
         self.project
             .registry
             .set_comment(class, idx, comment)
@@ -666,6 +823,7 @@ impl AppState {
 
     /// Rename a class.
     pub fn rename_class(&mut self, id: ClassId, name: String) -> Result<(), AppError> {
+        self.snapshot();
         self.project
             .registry
             .rename_class(id, name)
@@ -674,6 +832,7 @@ impl AppState {
 
     /// Set the address expression of a class.
     pub fn set_address_expr(&mut self, id: ClassId, expr: String) -> Result<(), AppError> {
+        self.snapshot();
         self.project
             .registry
             .set_address_expr(id, expr)
@@ -725,6 +884,10 @@ impl AppState {
     }
 
     /// Load a project from a RON file (replaces state).
+    ///
+    /// Clears the undo history: the snapshots describe a different project, so
+    /// undoing across a load would splice one project's classes into another's
+    /// views.
     pub fn load(&mut self, path: &str) -> Result<(), AppError> {
         let project = Project::load(path)?;
         self.project = project;
@@ -732,6 +895,7 @@ impl AppState {
         self.selected_view = 0;
         self.view_status = vec![ViewStatus::default(); self.project.views.len()];
         self.expr_cache.clear();
+        self.history.clear();
         Ok(())
     }
 }
@@ -1077,5 +1241,204 @@ mod tests {
         let _ = st.set_address_expr(c, "<game> + 0x20".to_string());
         let _ = st.compute_rows();
         assert_eq!(st.view_status[0].base, 0x4020);
+    }
+
+    fn field_names(st: &AppState, c: ClassId) -> Vec<String> {
+        st.registry()
+            .get(c)
+            .map(|cl| cl.nodes.iter().map(|n| n.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn undo_reverses_one_edit_and_redo_reapplies_it() {
+        let mut st = AppState::new();
+        let c = st.add_class("Player");
+        st.push_node(c, Node::new("hp", NodeKind::Int(IntWidth::W32)))
+            .unwrap();
+        st.push_node(c, Node::new("mp", NodeKind::Int(IntWidth::W32)))
+            .unwrap();
+        assert_eq!(field_names(&st, c), ["hp", "mp"]);
+
+        assert!(st.undo());
+        assert_eq!(field_names(&st, c), ["hp"]);
+        assert!(st.undo());
+        assert_eq!(field_names(&st, c), Vec::<String>::new());
+
+        assert!(st.redo());
+        assert_eq!(field_names(&st, c), ["hp"]);
+        assert!(st.redo());
+        assert_eq!(field_names(&st, c), ["hp", "mp"]);
+        assert!(!st.redo(), "redo past the tip must be a no-op");
+    }
+
+    #[test]
+    fn a_multi_select_delete_is_one_undo_step() {
+        // `delete_many` used to loop through `delete_node`; each iteration would
+        // have taken its own snapshot, so undoing a 3-row delete would restore
+        // one row per Ctrl+Z.
+        let mut st = AppState::new();
+        let c = st.add_class("S");
+        for i in 0..4 {
+            st.push_node(c, Node::new(format!("f{i}"), NodeKind::Hex(IntWidth::W8)))
+                .unwrap();
+        }
+        let before = st.undo_depth();
+        st.delete_many(&[(c, 0), (c, 1), (c, 2)]).unwrap();
+        assert_eq!(field_names(&st, c), ["f3"]);
+        assert_eq!(st.undo_depth(), before + 1, "one action, one undo step");
+        assert!(st.undo());
+        assert_eq!(field_names(&st, c), ["f0", "f1", "f2", "f3"]);
+    }
+
+    #[test]
+    fn add_array_is_one_undo_step() {
+        let mut st = AppState::new();
+        let c = st.add_class("S");
+        let before = st.undo_depth();
+        st.add_array(c, NodeKind::Hex(IntWidth::W32), 8).unwrap();
+        assert_eq!(st.undo_depth(), before + 1);
+        assert!(st.undo());
+        assert!(field_names(&st, c).is_empty());
+    }
+
+    #[test]
+    fn undo_restores_references_a_class_removal_rewrote() {
+        // `remove_class` rewrites every reference to the dead class across the
+        // whole registry, which is why undo snapshots the project rather than
+        // journalling an inverse operation.
+        let mut st = AppState::new();
+        let inner = st.add_class("Inner");
+        st.push_node(inner, Node::new("x", NodeKind::Hex(IntWidth::W32)))
+            .unwrap();
+        let outer = st.add_class("Outer");
+        st.push_node(
+            outer,
+            Node::new("i", NodeKind::ClassInstance { class_id: inner }),
+        )
+        .unwrap();
+        assert_eq!(st.registry().size_of(outer), 4);
+
+        st.remove_class(inner);
+        assert!(st.registry().get(inner).is_none());
+        // the inline instance became same-size Unknown, preserving layout
+        assert_eq!(st.registry().size_of(outer), 4);
+
+        assert!(st.undo());
+        assert!(st.registry().get(inner).is_some());
+        assert_eq!(
+            st.registry().get(outer).unwrap().nodes[0].kind,
+            NodeKind::ClassInstance { class_id: inner },
+            "the rewritten reference came back"
+        );
+    }
+
+    #[test]
+    fn a_new_edit_discards_the_redo_branch() {
+        let mut st = AppState::new();
+        let c = st.add_class("S");
+        st.push_node(c, Node::new("a", NodeKind::Hex(IntWidth::W8)))
+            .unwrap();
+        assert!(st.undo());
+        assert!(st.can_redo());
+        st.push_node(c, Node::new("b", NodeKind::Hex(IntWidth::W8)))
+            .unwrap();
+        assert!(!st.can_redo(), "branching forward must drop the old future");
+        assert_eq!(field_names(&st, c), ["b"]);
+    }
+
+    #[test]
+    fn undo_on_a_fresh_state_is_a_no_op() {
+        let mut st = AppState::new();
+        assert!(!st.can_undo());
+        assert!(!st.undo());
+        assert!(!st.redo());
+    }
+
+    #[test]
+    fn a_large_project_trades_undo_depth_for_memory() {
+        // Depth alone is not a memory bound: 64 snapshots of a big project is
+        // ~100 MB (benches/history.rs). Once the node budget binds, the stack
+        // must stop growing well short of DEPTH.
+        let mut st = AppState::new();
+        let c = st.add_class("Big");
+        let wide = History::MAX_NODES / 8;
+        st.add_bytes(c, wide * 8).unwrap();
+        assert!(st.registry().get(c).unwrap().nodes.len() >= wide);
+
+        for i in 0..20 {
+            st.rename_node(c, 0, format!("n{i}")).unwrap();
+        }
+        assert!(
+            st.undo_depth() < History::DEPTH,
+            "node budget never bound: depth {}",
+            st.undo_depth()
+        );
+        // the most recent edit is always undoable, however big the project
+        assert!(st.can_undo());
+        assert!(st.undo());
+        assert_eq!(st.registry().get(c).unwrap().nodes[0].name, "n18");
+    }
+
+    #[test]
+    fn one_oversized_snapshot_is_still_undoable() {
+        // A single project bigger than the whole budget must not trim itself
+        // away: the edit that just happened would become unundoable.
+        let mut st = AppState::new();
+        let c = st.add_class("Huge");
+        st.add_bytes(c, (History::MAX_NODES + 1000) * 8).unwrap();
+        st.rename_node(c, 0, "renamed".into()).unwrap();
+        assert_eq!(st.undo_depth(), 1);
+        assert!(st.undo());
+        assert_ne!(st.registry().get(c).unwrap().nodes[0].name, "renamed");
+    }
+
+    #[test]
+    fn the_history_depth_is_bounded() {
+        let mut st = AppState::new();
+        let c = st.add_class("S");
+        for i in 0..(History::DEPTH * 2) {
+            st.push_node(c, Node::new(format!("f{i}"), NodeKind::Hex(IntWidth::W8)))
+                .unwrap();
+        }
+        assert_eq!(st.undo_depth(), History::DEPTH);
+        // unwinding the whole stack must not panic or restore a half-state
+        while st.undo() {}
+        assert!(!st.can_undo());
+        assert_eq!(field_names(&st, c).len(), History::DEPTH);
+    }
+
+    #[test]
+    fn undo_keeps_the_view_cursor_in_range() {
+        // `add_class` opens a view; undoing it removes that view, and a stale
+        // `selected_view` would index past the end.
+        let mut st = AppState::new();
+        st.add_class("A");
+        st.add_class("B");
+        assert_eq!(st.selected_view, 1);
+        assert!(st.undo());
+        assert_eq!(st.project.views.len(), 1);
+        assert_eq!(st.selected_view, 0);
+        assert!(st.selected_class().is_some());
+        let _ = st.compute_rows();
+    }
+
+    #[test]
+    fn loading_a_project_clears_the_history() {
+        let dir = std::env::temp_dir().join("reclass_undo_load.ron");
+        let mut st = AppState::new();
+        let c = st.add_class("S");
+        st.push_node(c, Node::new("a", NodeKind::Hex(IntWidth::W8)))
+            .unwrap();
+        st.save(dir.to_str().unwrap()).unwrap();
+
+        let mut other = AppState::new();
+        other.add_class("Different");
+        other.load(dir.to_str().unwrap()).unwrap();
+        // undoing across a load would splice one project's classes into
+        // another's views
+        assert!(!other.can_undo());
+        assert!(!other.can_redo());
+        let _ = std::fs::remove_file(&dir);
     }
 }

@@ -39,7 +39,11 @@ mod imp {
     }
 
     /// A complete, serializable project.
-    #[derive(Debug, Default, Serialize, Deserialize)]
+    ///
+    /// `Clone` because the app's undo history is a stack of whole-project
+    /// snapshots: a class removal rewrites references across every other class,
+    /// so nothing smaller than the project reliably reverses one edit.
+    #[derive(Clone, Debug, Default, Serialize, Deserialize)]
     pub struct Project {
         /// All classes.
         pub registry: ClassRegistry,

@@ -194,6 +194,28 @@ impl ReClassApp {
                         ui.close();
                     }
                 });
+                ui.menu_button("Edit", |ui| {
+                    if ui
+                        .add_enabled(
+                            self.state.can_undo(),
+                            egui::Button::new("Undo").shortcut_text("Ctrl+Z"),
+                        )
+                        .clicked()
+                    {
+                        actions.push(Action::Undo);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.state.can_redo(),
+                            egui::Button::new("Redo").shortcut_text("Ctrl+Shift+Z"),
+                        )
+                        .clicked()
+                    {
+                        actions.push(Action::Redo);
+                        ui.close();
+                    }
+                });
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.show_side_panel, "Classes panel");
                     ui.checkbox(&mut self.show_memory_map, "Memory map");

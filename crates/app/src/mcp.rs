@@ -411,6 +411,10 @@ fn tool_defs() -> Vec<(&'static str, String, Value)> {
             obj(json!({ "path": { "type": "string" } }), json!(["path"]))),
         ("set_pointer_width", "Set the target's pointer width in bits: 32 or 64. Changes the offset of every field after a pointer.".into(),
             obj(json!({ "bits": { "type": "integer" } }), json!(["bits"]))),
+        ("undo", "Undo the last structural edit. Returns whether anything changed.".into(),
+            obj(json!({}), json!([]))),
+        ("redo", "Redo the last undone edit. Returns whether anything changed.".into(),
+            obj(json!({}), json!([]))),
     ]
 }
 
@@ -606,6 +610,8 @@ fn tool(state: &mut AppState, name: &str, a: &Value) -> Result<Value, String> {
             state.project.registry.set_ptr_width(w);
             Ok(json!({ "bits": bits }))
         }
+        "undo" => Ok(json!({ "changed": state.undo(), "depth": state.undo_depth() })),
+        "redo" => Ok(json!({ "changed": state.redo(), "depth": state.undo_depth() })),
         other => Err(format!("unknown tool: {other}")),
     }
 }

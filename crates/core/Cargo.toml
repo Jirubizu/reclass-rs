@@ -26,3 +26,7 @@ ron = { workspace = true }
 [[bench]]
 name = "engine"
 harness = false
+
+[[bench]]
+name = "history"
+harness = false

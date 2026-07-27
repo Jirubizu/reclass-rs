@@ -210,4 +210,39 @@ mod tests {
             Err(ProjectError::Invalid(_))
         ));
     }
+
+    #[test]
+    fn pointer_width_survives_a_round_trip() {
+        use crate::class::PtrWidth;
+        let mut reg = ClassRegistry::new();
+        reg.set_ptr_width(PtrWidth::P32);
+        let c = reg.add_class("S");
+        reg.push_node(c, Node::new("p", NodeKind::Pointer)).unwrap();
+        let p = Project {
+            registry: reg,
+            ..Default::default()
+        };
+        let back = Project::from_ron(&p.to_ron().unwrap()).unwrap();
+        assert_eq!(back.registry.ptr_width(), PtrWidth::P32);
+        // and the layout it implies came back with it
+        assert_eq!(back.registry.size_of(c), 4);
+    }
+
+    #[test]
+    fn a_project_saved_before_pointer_width_existed_loads_as_64_bit() {
+        use crate::class::PtrWidth;
+        // Field-for-field what an older reclass-rs wrote: no `ptr` key.
+        let legacy = r#"(
+            registry: (
+                classes: { 0: (id: 0, name: "S", nodes: [(name: "p", comment: "", kind: Pointer)], address_expr: "") },
+                next_id: 1,
+            ),
+            views: [],
+            window: (refresh_hz: 30, width: 1280.0, height: 800.0),
+            attach_name: None,
+        )"#;
+        let p = Project::from_ron(legacy).expect("legacy project still loads");
+        assert_eq!(p.registry.ptr_width(), PtrWidth::P64);
+        assert_eq!(p.registry.size_of(0), 8);
+    }
 }

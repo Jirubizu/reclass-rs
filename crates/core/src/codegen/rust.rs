@@ -17,6 +17,20 @@ pub(super) fn generate(reg: &ClassRegistry) -> String {
     out
 }
 
+/// The Rust type for a pointer to `pointee`.
+///
+/// `*mut T` only when the target's pointer width matches this host's. A 32-bit
+/// target's pointer is 4 bytes; emitting `*mut T` there would make the
+/// generated struct 8 bytes wide at that field and shift every later offset,
+/// so the address is emitted as a `u32` instead.
+fn ptr_ty(reg: &ClassRegistry, pointee: &str) -> String {
+    if reg.pointer_bytes() == std::mem::size_of::<usize>() {
+        format!("*mut {pointee}")
+    } else {
+        format!("u{}", reg.pointer_bytes() * 8)
+    }
+}
+
 /// Emit a single `#[repr(C, packed)]` struct. Shared with the project generator,
 /// which reuses the exact same layout struct in its `generated.rs`.
 pub(super) fn emit_rust_struct(reg: &ClassRegistry, class: &Class, out: &mut String) {
@@ -59,16 +73,19 @@ fn rust_type(reg: &ClassRegistry, kind: &NodeKind) -> String {
             TextEncoding::Utf8 => format!("[u8; {len}]"),
             TextEncoding::Utf16 => format!("[u16; {len}]"),
         },
-        NodeKind::Pointer | NodeKind::FunctionPtr => "*mut u8".into(),
+        // A pointer in a 32-bit target is 4 bytes. A real `*mut T` would be 8
+        // in the generated (host-compiled) struct and silently shift every
+        // later field, so a narrow pointer is emitted as its integer.
+        NodeKind::Pointer | NodeKind::FunctionPtr => ptr_ty(reg, "u8"),
         NodeKind::PtrText { encoding, .. } => match encoding {
-            TextEncoding::Utf8 => "*mut u8".into(),
-            TextEncoding::Utf16 => "*mut u16".into(),
+            TextEncoding::Utf8 => ptr_ty(reg, "u8"),
+            TextEncoding::Utf16 => ptr_ty(reg, "u16"),
         },
         NodeKind::Array { element, count } => {
             format!("[{}; {count}]", rust_type(reg, element))
         }
         NodeKind::ClassInstance { class_id } => rust_type_name(reg, *class_id),
-        NodeKind::ClassPtr { class_id } => format!("*mut {}", rust_type_name(reg, *class_id)),
+        NodeKind::ClassPtr { class_id } => ptr_ty(reg, &rust_type_name(reg, *class_id)),
         NodeKind::Padding(n) | NodeKind::Unknown(n) => format!("[u8; {n}]"),
     }
 }

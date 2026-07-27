@@ -85,10 +85,13 @@ fn c_field(reg: &ClassRegistry, field: &str, kind: &NodeKind) -> String {
             TextEncoding::Utf8 => format!("char {field}[{len}]"),
             TextEncoding::Utf16 => format!("uint16_t {field}[{len}]"),
         },
-        NodeKind::Pointer | NodeKind::FunctionPtr => format!("void* {field}"),
+        // `void*`/`T*` are the host compiler's width. When the target's width
+        // differs, the address is emitted as a fixed-width integer so the
+        // struct's offsets still match the live layout.
+        NodeKind::Pointer | NodeKind::FunctionPtr => c_ptr_decl(reg, "void", field),
         NodeKind::PtrText { encoding, .. } => match encoding {
-            TextEncoding::Utf8 => format!("char* {field}"),
-            TextEncoding::Utf16 => format!("uint16_t* {field}"),
+            TextEncoding::Utf8 => c_ptr_decl(reg, "char", field),
+            TextEncoding::Utf16 => c_ptr_decl(reg, "uint16_t", field),
         },
         NodeKind::Array { element, count } => {
             // Append this dimension to the *declarator* before recursing, so
@@ -100,9 +103,24 @@ fn c_field(reg: &ClassRegistry, field: &str, kind: &NodeKind) -> String {
         NodeKind::ClassInstance { class_id } => {
             format!("struct {} {field}", c_type_name(reg, *class_id))
         }
-        NodeKind::ClassPtr { class_id } => {
-            format!("struct {}* {field}", c_type_name(reg, *class_id))
-        }
+        NodeKind::ClassPtr { class_id } => c_ptr_decl(
+            reg,
+            &format!("struct {}", c_type_name(reg, *class_id)),
+            field,
+        ),
         NodeKind::Padding(n) | NodeKind::Unknown(n) => format!("uint8_t {field}[{n}]"),
+    }
+}
+
+/// A pointer field declaration: `T* name`, or a fixed-width integer when the
+/// target's pointer width differs from what a host-compiled `T*` would be.
+///
+/// The generated header is compiled for the host, so on a 64-bit host a 32-bit
+/// target's `T*` would occupy 8 bytes and shift every field after it.
+fn c_ptr_decl(reg: &ClassRegistry, pointee: &str, field: &str) -> String {
+    if reg.pointer_bytes() == std::mem::size_of::<usize>() {
+        format!("{pointee}* {field}")
+    } else {
+        format!("uint{}_t {field}", reg.pointer_bytes() * 8)
     }
 }

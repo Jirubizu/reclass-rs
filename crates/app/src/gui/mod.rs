@@ -819,7 +819,7 @@ mod tests {
     fn asm_sizes_match_keywords() {
         let sizes: Vec<usize> = asm_size_kinds()
             .iter()
-            .map(|(_, k)| k.fixed_size())
+            .map(|(_, k)| k.fixed_size(8))
             .collect();
         assert_eq!(sizes, vec![1, 2, 4, 8, 10, 16, 32, 64]);
     }

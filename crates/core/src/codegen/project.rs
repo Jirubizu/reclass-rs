@@ -340,7 +340,7 @@ fn emit_accessor(
                 off,
                 field: &ptr_label,
             };
-            emit_scalar(out, &ptr_acc, "usize", 8);
+            emit_scalar(out, &ptr_acc, "usize", reg.pointer_bytes());
             if reg.get(*class_id).is_some() {
                 let tv = rust_view_name(reg, *class_id);
                 let _ = writeln!(out, "    /// follow `{field}` to its target");
@@ -352,14 +352,14 @@ fn emit_accessor(
         NodeKind::Padding(n) => {
             let _ = writeln!(out, "    // padding: `{field}` ({n} bytes) @ 0x{off:X}");
         }
-        NodeKind::Array { element, count } => match scalar_prim(element) {
+        NodeKind::Array { element, count } => match scalar_prim(reg, element) {
             Some((ty, w)) => emit_scalar_array(out, &acc, &ty, w, *count),
             None => emit_raw_bytes(out, &acc, size, "array"),
         },
         NodeKind::Text { .. } | NodeKind::Unknown(_) => {
             emit_raw_bytes(out, &acc, size, "bytes");
         }
-        other => match scalar_prim(other) {
+        other => match scalar_prim(reg, other) {
             Some((ty, w)) => emit_scalar(out, &acc, &ty, w),
             None => {
                 let _ = writeln!(
@@ -373,7 +373,7 @@ fn emit_accessor(
 
 /// The Rust primitive + byte width for a `from_le_bytes`-capable scalar (not
 /// `bool`, which has no `from_le_bytes`), else `None`.
-fn scalar_prim(kind: &NodeKind) -> Option<(String, usize)> {
+fn scalar_prim(reg: &ClassRegistry, kind: &NodeKind) -> Option<(String, usize)> {
     Some(match kind {
         NodeKind::Hex(w) | NodeKind::UInt(w) => (format!("u{}", w.bits()), w.bytes()),
         NodeKind::Int(w) => (format!("i{}", w.bits()), w.bytes()),
@@ -382,8 +382,10 @@ fn scalar_prim(kind: &NodeKind) -> Option<(String, usize)> {
         NodeKind::Enum { width, .. } | NodeKind::Bitfield(width) => {
             (format!("u{}", width.bits()), width.bytes())
         }
+        // `usize` regardless of target width: the accessor returns a host-side
+        // address value, and the byte count is what makes the read correct.
         NodeKind::Pointer | NodeKind::FunctionPtr | NodeKind::PtrText { .. } => {
-            ("usize".to_string(), 8)
+            ("usize".to_string(), reg.pointer_bytes())
         }
         _ => return None,
     })

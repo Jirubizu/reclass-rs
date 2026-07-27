@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use reclass_backend_vmem::{VmemBackend, list_processes, process_name};
 use reclass_core::codegen::Language;
-use reclass_core::{IntWidth, Node, NodeKind, TextEncoding};
+use reclass_core::{IntWidth, Node, NodeKind, PtrWidth, TextEncoding};
 use serde_json::{Value, json};
 
 use crate::app_state::AppState;
@@ -409,6 +409,8 @@ fn tool_defs() -> Vec<(&'static str, String, Value)> {
             obj(json!({ "path": { "type": "string" } }), json!(["path"]))),
         ("load_project", "Load a project from a .ron file (replaces current state).".into(),
             obj(json!({ "path": { "type": "string" } }), json!(["path"]))),
+        ("set_pointer_width", "Set the target's pointer width in bits: 32 or 64. Changes the offset of every field after a pointer.".into(),
+            obj(json!({ "bits": { "type": "integer" } }), json!(["bits"]))),
     ]
 }
 
@@ -593,6 +595,16 @@ fn tool(state: &mut AppState, name: &str, a: &Value) -> Result<Value, String> {
         "load_project" => {
             state.load(arg_str(a, "path")?)?;
             Ok(json!({ "ok": true }))
+        }
+        "set_pointer_width" => {
+            let bits = a.get("bits").and_then(Value::as_u64).unwrap_or(64);
+            let w = match bits {
+                32 => PtrWidth::P32,
+                64 => PtrWidth::P64,
+                other => return Err(format!("pointer width must be 32 or 64, got {other}")),
+            };
+            state.project.registry.set_ptr_width(w);
+            Ok(json!({ "bits": bits }))
         }
         other => Err(format!("unknown tool: {other}")),
     }

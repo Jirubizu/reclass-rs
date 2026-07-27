@@ -712,4 +712,59 @@ mod tests {
             "PtrText lost its accessor:\n{src}"
         );
     }
+
+    #[test]
+    fn a_32_bit_target_emits_integer_pointers_not_host_width_ones() {
+        use crate::class::PtrWidth;
+        let mut reg = ClassRegistry::new();
+        reg.set_ptr_width(PtrWidth::P32);
+        let t = reg.add_class("T");
+        let c = reg.add_class("S");
+        reg.push_node(c, Node::new("p", NodeKind::Pointer)).unwrap();
+        reg.push_node(c, Node::new("cp", NodeKind::ClassPtr { class_id: t }))
+            .unwrap();
+        reg.push_node(c, Node::new("after", NodeKind::UInt(IntWidth::W32)))
+            .unwrap();
+
+        // A host-compiled `*mut T` / `void*` is 8 bytes here, which would put
+        // `after` at 0x10 in the generated struct but 0x8 in the live target.
+        let rust = generate(&reg, Language::Rust);
+        assert!(rust.contains("pub p: u32, // 0x0"), "{rust}");
+        assert!(rust.contains("pub cp: u32, // 0x4"), "{rust}");
+        assert!(rust.contains("pub after: u32, // 0x8"), "{rust}");
+        assert!(!rust.contains("*mut"), "{rust}");
+
+        let c_src = generate(&reg, Language::C);
+        assert!(c_src.contains("uint32_t p; // 0x0"), "{c_src}");
+        assert!(c_src.contains("uint32_t cp; // 0x4"), "{c_src}");
+        assert!(c_src.contains("uint32_t after; // 0x8"), "{c_src}");
+        assert!(!c_src.contains("void*"), "{c_src}");
+    }
+
+    #[test]
+    fn a_64_bit_target_still_emits_real_pointers() {
+        let mut reg = ClassRegistry::new();
+        let c = reg.add_class("S");
+        reg.push_node(c, Node::new("p", NodeKind::Pointer)).unwrap();
+        assert!(generate(&reg, Language::Rust).contains("pub p: *mut u8"));
+        assert!(generate(&reg, Language::C).contains("void* p"));
+    }
+
+    #[test]
+    fn project_accessors_read_the_target_pointer_width() {
+        use crate::class::PtrWidth;
+        let mut reg = ClassRegistry::new();
+        reg.set_ptr_width(PtrWidth::P32);
+        let c = reg.add_class("S");
+        reg.push_node(c, Node::new("p", NodeKind::Pointer)).unwrap();
+        let files = generate_project(&reg, "demo", None);
+        let src = &files
+            .iter()
+            .find(|f| f.0.ends_with("generated.rs"))
+            .expect("bindings module")
+            .1;
+        // a 4-byte read, not 8 — an 8-byte read would swallow the next field
+        assert!(src.contains("[0u8; 4]"), "{src}");
+        assert!(src.contains("-> Result<usize, Error>"), "{src}");
+    }
 }

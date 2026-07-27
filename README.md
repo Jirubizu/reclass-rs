@@ -7,7 +7,7 @@ A native-Linux, [ReClass.NET](https://github.com/ReClassNET/ReClass.NET)-style *
 
 You define a *class* as an ordered list of typed *fields*; reclass-rs resolves a base address, re-reads the target's memory a few times a second, and renders each field's **offset / address / type / name / value / raw bytes** with inline editing. Point it at a process, build up structs interactively, follow pointer chains, and export the result as C / C++ / Rust.
 
-> ⚠️ **Linux / x86-64 only. Userspace only.** This is a research/RE tool. Only use it on processes you own or are authorized to inspect. See [Legal & ethics](#legal--ethics).
+> ⚠️ **Linux host, x86-64 only. Userspace only.** 32-bit *targets* are supported (see below); the host build is x86-64. This is a research/RE tool. Only use it on processes you own or are authorized to inspect. See [Legal & ethics](#legal--ethics).
 
 ---
 
@@ -18,6 +18,7 @@ You define a *class* as an ordered list of typed *fields*; reclass-rs resolves a
   - **`Enum`** — an integer with a named-variant table, edited in the Type menu (`NAME = VALUE` per line, decimal or `0x`). Values show as `Idle (0)`; typing a variant name writes its value. Codegen emits the storage integer plus a `// enum:` comment, never a real `enum`: a foreign process can hold any bit pattern, and materializing an out-of-range discriminant is undefined behaviour.
   - **`Bits8/16/32/64`** — an integer displayed as MSB-first binary octets (`00000001 00000010`). Edits accept binary, `0x` hex, or decimal; bare digits are binary, so retyping what is on screen means the same value.
   - **`Text*`/`WText*`** — a `char*` / `char16_t*`. The engine follows it and shows the string inline (`0x2000 -> "Player One"`), batching every followed string in the tick into one extra scatter. `max` bounds the read so a garbage pointer cannot request a huge one.
+- **32-bit targets.** *View → Target pointer width* switches the project between 32- and 64-bit pointers. It is a property of the target, not the app: every `Pointer`/`ClassPtr`/`FunctionPtr`/`Text*` narrows to 4 bytes and every offset after one shifts. The engine reads pointers at that width, edits write at that width (an address that does not fit is rejected rather than truncated), and codegen emits a fixed-width integer instead of a host-width `void*`/`*mut T`, so the generated struct's offsets still match the live layout. Persisted with the project; a project written before this existed loads as 64-bit.
 - **Derived offsets** that recompute and re-cache on every structural edit; inline `ClassInstance` cycles are detected and rejected (`ClassPtr` cycles are fine — they're a read boundary).
 - **Address expressions:** `<module.so> + 0x10`, `[0xADDR]`, `[<module> + 0x10] + 0x20`, with `+ - * /`.
 - **egui desktop UI** (default) and a **ratatui terminal UI** (`--tui`) over the same core:

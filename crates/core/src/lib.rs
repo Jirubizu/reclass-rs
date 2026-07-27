@@ -18,7 +18,7 @@ pub mod project;
 #[cfg(feature = "mock")]
 pub use backend::MockBackend;
 pub use backend::{MemError, MemoryBackend, Perms, Region, ScatterReq};
-pub use class::{Class, ClassId, ClassRegistry, RegistryError};
+pub use class::{Class, ClassId, ClassRegistry, PtrWidth, RegistryError};
 pub use engine::{Engine, ExpandState, PathSeg, Root, Row};
 pub use expr::{AddrExpr, BinOp, ExprError};
 pub use node::{AddrInfo, EditErr, EnumVariant, FmtCtx, IntWidth, Node, NodeKind, TextEncoding};

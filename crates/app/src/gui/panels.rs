@@ -3,6 +3,7 @@
 
 use eframe::egui;
 use reclass_backend_vmem::kernel_available;
+use reclass_core::class::PtrWidth;
 use reclass_core::codegen::Language;
 
 use super::settings::{Settings, settings_file};
@@ -200,6 +201,19 @@ impl ReClassApp {
                     ui.separator();
                     ui.checkbox(&mut self.show_settings, "Settings");
                     ui.checkbox(&mut self.show_plugins, "Plugins");
+                    ui.separator();
+                    // A property of the target, not of the app: it is stored in
+                    // the project and changes every offset after a pointer.
+                    ui.label("Target pointer width");
+                    let mut ptr = self.state.project.registry.ptr_width();
+                    let before = ptr;
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut ptr, PtrWidth::P32, "32-bit");
+                        ui.selectable_value(&mut ptr, PtrWidth::P64, "64-bit");
+                    });
+                    if ptr != before {
+                        self.state.project.registry.set_ptr_width(ptr);
+                    }
                     ui.separator();
                     if ui.button("Check for updates…").clicked() {
                         self.updater.check();

@@ -81,6 +81,34 @@ pub enum RegistryError {
     },
 }
 
+/// Pointer width of the analyzed target.
+///
+/// A property of the target process, not of the host: reclass-rs runs 64-bit
+/// but a 32-bit target lays every pointer out in 4 bytes, which shifts every
+/// offset after it. Stored on the registry because [`NodeKind::size`] is the
+/// only place that can apply it consistently.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum PtrWidth {
+    /// 32-bit target: pointers occupy 4 bytes.
+    P32,
+    /// 64-bit target: pointers occupy 8 bytes.
+    #[default]
+    P64,
+}
+
+impl PtrWidth {
+    /// Pointer size in bytes.
+    #[inline]
+    #[must_use]
+    pub fn bytes(self) -> usize {
+        match self {
+            PtrWidth::P32 => 4,
+            PtrWidth::P64 => 8,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Cache {
     sizes: HashMap<ClassId, usize>,
@@ -93,6 +121,9 @@ struct Cache {
 pub struct ClassRegistry {
     classes: BTreeMap<ClassId, Class>,
     next_id: ClassId,
+    /// Pointer width of the target these classes describe.
+    #[cfg_attr(feature = "serde", serde(default))]
+    ptr: PtrWidth,
     #[cfg_attr(feature = "serde", serde(skip))]
     cache: RefCell<Cache>,
 }
@@ -108,6 +139,29 @@ impl ClassRegistry {
         let c = self.cache.get_mut();
         c.sizes.clear();
         c.offsets.clear();
+    }
+
+    /// The target's pointer width.
+    #[must_use]
+    pub fn ptr_width(&self) -> PtrWidth {
+        self.ptr
+    }
+
+    /// Pointer size in bytes for this target — what [`crate::node::NodeKind`]
+    /// sizing and pointer reads use.
+    #[inline]
+    #[must_use]
+    pub fn pointer_bytes(&self) -> usize {
+        self.ptr.bytes()
+    }
+
+    /// Switch the target's pointer width. Invalidates every cached size and
+    /// offset: this moves every field that follows a pointer.
+    pub fn set_ptr_width(&mut self, ptr: PtrWidth) {
+        if self.ptr != ptr {
+            self.ptr = ptr;
+            self.invalidate();
+        }
     }
 
     // -- class lifecycle ---------------------------------------------------
@@ -422,7 +476,7 @@ impl ClassRegistry {
                 let (s, c) = self.node_size_checked(element, stack);
                 (s.saturating_mul(*count), c)
             }
-            other => (other.fixed_size(), true),
+            other => (other.fixed_size(self.ptr.bytes()), true),
         }
     }
 
@@ -935,5 +989,80 @@ mod tests {
         let b_first = r2.size_of(b2); // enter from B first
         assert_eq!(b_via_a, b_first);
         assert!(r1.validate().is_err());
+    }
+
+    #[test]
+    fn pointer_width_shifts_every_offset_after_a_pointer() {
+        let mut reg = ClassRegistry::new();
+        let c = reg.add_class("S");
+        reg.push_node(c, Node::new("a", NodeKind::Int(IntWidth::W32)))
+            .unwrap();
+        reg.push_node(c, Node::new("p", NodeKind::Pointer)).unwrap();
+        reg.push_node(c, Node::new("b", NodeKind::Int(IntWidth::W32)))
+            .unwrap();
+
+        assert_eq!(reg.ptr_width(), PtrWidth::P64, "64-bit is the default");
+        assert_eq!(reg.offsets(c), vec![0, 4, 12]);
+        assert_eq!(reg.size_of(c), 16);
+
+        reg.set_ptr_width(PtrWidth::P32);
+        assert_eq!(reg.offsets(c), vec![0, 4, 8]);
+        assert_eq!(reg.size_of(c), 12);
+    }
+
+    #[test]
+    fn changing_pointer_width_invalidates_the_size_cache() {
+        let mut reg = ClassRegistry::new();
+        let c = reg.add_class("S");
+        reg.push_node(c, Node::new("p", NodeKind::Pointer)).unwrap();
+        // warm the cache at 64-bit, then switch — a stale 8 here would put
+        // every later field at the wrong address in the live view
+        assert_eq!(reg.size_of(c), 8);
+        reg.set_ptr_width(PtrWidth::P32);
+        assert_eq!(reg.size_of(c), 4);
+        reg.set_ptr_width(PtrWidth::P64);
+        assert_eq!(reg.size_of(c), 8);
+    }
+
+    #[test]
+    fn every_pointer_kind_follows_the_target_width() {
+        use crate::node::TextEncoding;
+        let mut reg = ClassRegistry::new();
+        let target = reg.add_class("T");
+        let c = reg.add_class("S");
+        for kind in [
+            NodeKind::Pointer,
+            NodeKind::FunctionPtr,
+            NodeKind::ClassPtr { class_id: target },
+            NodeKind::PtrText {
+                encoding: TextEncoding::Utf8,
+                max: 32,
+            },
+        ] {
+            reg.push_node(c, Node::new("p", kind)).unwrap();
+        }
+        assert_eq!(reg.size_of(c), 32);
+        reg.set_ptr_width(PtrWidth::P32);
+        assert_eq!(reg.size_of(c), 16);
+    }
+
+    #[test]
+    fn arrays_of_pointers_scale_with_the_width() {
+        let mut reg = ClassRegistry::new();
+        let c = reg.add_class("S");
+        reg.push_node(
+            c,
+            Node::new(
+                "ptrs",
+                NodeKind::Array {
+                    element: Box::new(NodeKind::Pointer),
+                    count: 10,
+                },
+            ),
+        )
+        .unwrap();
+        assert_eq!(reg.size_of(c), 80);
+        reg.set_ptr_width(PtrWidth::P32);
+        assert_eq!(reg.size_of(c), 40);
     }
 }

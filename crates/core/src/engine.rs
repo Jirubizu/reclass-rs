@@ -624,7 +624,7 @@ fn discover_kind(
             }
         }
         NodeKind::ClassPtr { class_id } if ctx.expand.is_expanded(frame.root, &path) => {
-            if let Some(target) = read_u64(&frame.buf, off) {
+            if let Some(target) = read_ptr_at(frame, off, ctx.reg.pointer_bytes()) {
                 out.push(DiscSpec {
                     parent_fi: fi,
                     ptr_path: path,
@@ -637,7 +637,7 @@ fn discover_kind(
         // Followed unconditionally: a `char*` whose string is not shown is
         // just a `Pointer`, so there is nothing for an expand toggle to add.
         NodeKind::PtrText { encoding, max } => {
-            if let Some(target) = read_u64(&frame.buf, off)
+            if let Some(target) = read_ptr_at(frame, off, ctx.reg.pointer_bytes())
                 && target != 0
                 && *max > 0
             {
@@ -880,9 +880,22 @@ fn hex_preview(slice: Option<&[u8]>) -> String {
     }
 }
 
-fn read_u64(buf: &[u8], off: usize) -> Option<u64> {
-    buf.get(off..off + 8)
-        .map(|b| u64::from_le_bytes(b.try_into().expect("slice is exactly 8 bytes")))
+/// Read the pointer stored at `off` in `frame`, using the target's pointer
+/// width.
+///
+/// `None` unless the whole slot is within the frame's *readable* prefix. The
+/// buffer is zero-filled past `readable_len` after a partial read, so testing
+/// the buffer length alone would happily assemble an address out of two real
+/// bytes and two padding zeros and then scatter-read wherever that lands.
+fn read_ptr_at(frame: &Frame, off: usize, ptr_bytes: usize) -> Option<u64> {
+    let n = ptr_bytes.clamp(1, 8);
+    if off.checked_add(n)? > frame.readable_len {
+        return None;
+    }
+    let b = frame.buf.get(off..off + n)?;
+    let mut v = [0u8; 8];
+    v[..n].copy_from_slice(b);
+    Some(u64::from_le_bytes(v))
 }
 
 #[cfg(all(test, feature = "mock"))]
@@ -1480,5 +1493,109 @@ mod ptr_text_tests {
         let rows = rows_of(&m, &reg, c, &mut eng);
         assert_eq!(rows.len(), 1);
         assert_eq!(eng.last_read_levels(), 2);
+    }
+}
+
+#[cfg(test)]
+mod ptr_width_tests {
+    use super::*;
+    use crate::backend::MockBackend;
+    use crate::class::PtrWidth;
+    use crate::node::{IntWidth, Node};
+
+    /// `p: Pointer` at 0 followed by `after: Hex32`. On a 32-bit target the
+    /// pointer occupies 4 bytes, so `after` lives at +4, not +8.
+    fn reg32() -> (ClassRegistry, ClassId, ClassId) {
+        let mut reg = ClassRegistry::new();
+        reg.set_ptr_width(PtrWidth::P32);
+        let target = reg.add_class("T");
+        reg.push_node(target, Node::new("v", NodeKind::Hex(IntWidth::W32)))
+            .unwrap();
+        let c = reg.add_class("S");
+        reg.push_node(c, Node::new("p", NodeKind::ClassPtr { class_id: target }))
+            .unwrap();
+        reg.push_node(c, Node::new("after", NodeKind::Hex(IntWidth::W32)))
+            .unwrap();
+        (reg, c, target)
+    }
+
+    #[test]
+    fn a_32_bit_pointer_is_read_from_four_bytes() {
+        let (reg, c, _) = reg32();
+        let m = MockBackend::new();
+        // 4-byte pointer to 0x2000, then `after` = 0xAABBCCDD
+        let mut head = 0x2000u32.to_le_bytes().to_vec();
+        head.extend_from_slice(&0xAABB_CCDDu32.to_le_bytes());
+        m.put(0x1000, head);
+        m.put(0x2000, 0x1234_5678u32.to_le_bytes().to_vec());
+
+        let mut expand = ExpandState::new();
+        expand.expand(0, vec![PathSeg::Node(0)]);
+        let mut eng = Engine::new();
+        let rows = eng.snapshot(
+            &m,
+            &reg,
+            &[Root {
+                class_id: c,
+                base: 0x1000,
+            }],
+            &expand,
+            None,
+        );
+        // the pointer resolved from 4 bytes, not 8 (8 would read 0xAABBCCDD00002000)
+        assert!(rows[0].value.starts_with("-> 0x2000"), "{}", rows[0].value);
+        assert_eq!(rows[1].value, "0x12345678", "followed the wrong target");
+        // `after` sits at +4 because the pointer is 4 bytes wide
+        assert_eq!(rows[2].name, "after");
+        assert_eq!(rows[2].address, 0x1004);
+        assert_eq!(rows[2].value, "0xAABBCCDD");
+    }
+
+    #[test]
+    fn the_same_bytes_read_differently_at_each_width() {
+        let (mut reg, c, _) = reg32();
+        let m = MockBackend::new();
+        m.put(0x1000, vec![0u8; 32]);
+        let mut eng = Engine::new();
+        let snap = |reg: &ClassRegistry, eng: &mut Engine| {
+            eng.snapshot(
+                &m,
+                reg,
+                &[Root {
+                    class_id: c,
+                    base: 0x1000,
+                }],
+                &ExpandState::new(),
+                None,
+            )
+        };
+        assert_eq!(snap(&reg, &mut eng)[1].address, 0x1004);
+        reg.set_ptr_width(PtrWidth::P64);
+        assert_eq!(snap(&reg, &mut eng)[1].address, 0x1008);
+    }
+
+    #[test]
+    fn a_truncated_pointer_slot_is_not_followed() {
+        // Only 2 of the pointer's 4 bytes are mapped: following a half-read
+        // address would scatter-read a garbage location.
+        let (reg, c, _) = reg32();
+        let m = MockBackend::new();
+        m.put(0x1000, vec![0x11, 0x22]);
+
+        let mut expand = ExpandState::new();
+        expand.expand(0, vec![PathSeg::Node(0)]);
+        let mut eng = Engine::new();
+        let rows = eng.snapshot(
+            &m,
+            &reg,
+            &[Root {
+                class_id: c,
+                base: 0x1000,
+            }],
+            &expand,
+            None,
+        );
+        // the ClassPtr row exists but has no expanded child rows under it
+        assert_eq!(rows.len(), 2, "{rows:#?}");
     }
 }

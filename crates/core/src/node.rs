@@ -342,14 +342,19 @@ impl NodeKind {
         match self {
             NodeKind::ClassInstance { class_id } => reg.size_of(*class_id),
             NodeKind::Array { element, count } => element.size(reg).saturating_mul(*count),
-            other => other.fixed_size(),
+            other => other.fixed_size(reg.pointer_bytes()),
         }
     }
 
     /// Size of every non-recursive kind; `0` for `ClassInstance`/`Array` (use
     /// [`size`](Self::size) with a registry for those).
+    ///
+    /// `ptr_bytes` is the target's pointer width (see
+    /// [`ClassRegistry::pointer_bytes`]). It is a parameter rather than a
+    /// constant because a 32-bit target lays pointers out in 4 bytes, which
+    /// shifts the offset of every field after one.
     #[must_use]
-    pub fn fixed_size(&self) -> usize {
+    pub fn fixed_size(&self, ptr_bytes: usize) -> usize {
         match self {
             NodeKind::Hex(w) | NodeKind::Int(w) | NodeKind::UInt(w) => w.bytes(),
             NodeKind::Float32 => 4,
@@ -363,7 +368,7 @@ impl NodeKind {
             NodeKind::Pointer
             | NodeKind::PtrText { .. }
             | NodeKind::ClassPtr { .. }
-            | NodeKind::FunctionPtr => 8,
+            | NodeKind::FunctionPtr => ptr_bytes,
             NodeKind::Padding(n) | NodeKind::Unknown(n) => *n,
             // recursive kinds have no fixed size
             NodeKind::ClassInstance { .. } | NodeKind::Array { .. } => 0,
@@ -468,11 +473,10 @@ impl NodeKind {
             NodeKind::Bitfield(w) => format_bits(bytes, *w),
             NodeKind::Text { encoding, .. } => format_text(bytes, *encoding),
             NodeKind::Pointer | NodeKind::FunctionPtr | NodeKind::PtrText { .. } => {
-                let target = le_unsigned(&bytes[..8.min(bytes.len())]);
-                format_ptr(target, ctx)
+                format_ptr(read_ptr(bytes, ctx.registry.pointer_bytes()), ctx)
             }
             NodeKind::ClassPtr { class_id } => {
-                let target = le_unsigned(&bytes[..8.min(bytes.len())]);
+                let target = read_ptr(bytes, ctx.registry.pointer_bytes());
                 let name = ctx.registry.name_of(*class_id).map_or_else(
                     || format!("class#{class_id}"),
                     std::string::ToString::to_string,
@@ -493,7 +497,11 @@ impl NodeKind {
 
     /// Parse user input into the bytes to write back. Errors with
     /// [`EditErr::NotEditable`] for aggregate / structural kinds.
-    pub fn parse_edit(&self, input: &str) -> Result<Vec<u8>, EditErr> {
+    ///
+    /// `ptr_bytes` is the target's pointer width (see
+    /// [`ClassRegistry::pointer_bytes`]); writing 8 bytes for a pointer on a
+    /// 32-bit target would clobber the next field.
+    pub fn parse_edit(&self, input: &str, ptr_bytes: usize) -> Result<Vec<u8>, EditErr> {
         match self {
             NodeKind::Hex(w) | NodeKind::UInt(w) => int_to_le(parse_int(input)?, *w, false),
             NodeKind::Int(w) => int_to_le(parse_int(input)?, *w, true),
@@ -529,13 +537,26 @@ impl NodeKind {
             NodeKind::Pointer
             | NodeKind::ClassPtr { .. }
             | NodeKind::FunctionPtr
-            | NodeKind::PtrText { .. } => Ok(parse_addr(input)?.to_le_bytes().to_vec()),
+            | NodeKind::PtrText { .. } => {
+                let addr = parse_addr(input)?;
+                let n = ptr_bytes.clamp(1, 8);
+                if n < 8 && addr > (u64::MAX >> ((8 - n) * 8)) {
+                    return Err(EditErr::OutOfRange);
+                }
+                Ok(addr.to_le_bytes()[..n].to_vec())
+            }
             NodeKind::Array { .. }
             | NodeKind::ClassInstance { .. }
             | NodeKind::Padding(_)
             | NodeKind::Unknown(_) => Err(EditErr::NotEditable),
         }
     }
+}
+/// Read a little-endian pointer of `ptr_bytes` width, tolerating a short slice
+/// (a truncated read yields the mapped prefix, zero-extended).
+#[inline]
+pub(crate) fn read_ptr(bytes: &[u8], ptr_bytes: usize) -> u64 {
+    le_unsigned(&bytes[..ptr_bytes.clamp(1, 8).min(bytes.len())])
 }
 
 fn fmt_float(f: f64) -> String {
@@ -684,20 +705,20 @@ mod tests {
 
     #[test]
     fn fixed_sizes() {
-        assert_eq!(NodeKind::Hex(IntWidth::W32).fixed_size(), 4);
-        assert_eq!(NodeKind::Int(IntWidth::W64).fixed_size(), 8);
-        assert_eq!(NodeKind::Bool.fixed_size(), 1);
-        assert_eq!(NodeKind::Vec3.fixed_size(), 12);
-        assert_eq!(NodeKind::Pointer.fixed_size(), 8);
+        assert_eq!(NodeKind::Hex(IntWidth::W32).fixed_size(8), 4);
+        assert_eq!(NodeKind::Int(IntWidth::W64).fixed_size(8), 8);
+        assert_eq!(NodeKind::Bool.fixed_size(8), 1);
+        assert_eq!(NodeKind::Vec3.fixed_size(8), 12);
+        assert_eq!(NodeKind::Pointer.fixed_size(8), 8);
         assert_eq!(
             NodeKind::Text {
                 encoding: TextEncoding::Utf16,
                 len: 8
             }
-            .fixed_size(),
+            .fixed_size(8),
             16
         );
-        assert_eq!(NodeKind::Padding(5).fixed_size(), 5);
+        assert_eq!(NodeKind::Padding(5).fixed_size(8), 5);
     }
 
     #[test]
@@ -752,28 +773,30 @@ mod tests {
     #[test]
     fn parse_edit_ints() {
         assert_eq!(
-            NodeKind::Int(IntWidth::W32).parse_edit("-5").unwrap(),
+            NodeKind::Int(IntWidth::W32).parse_edit("-5", 8).unwrap(),
             (-5i32).to_le_bytes()
         );
         assert_eq!(
-            NodeKind::UInt(IntWidth::W16).parse_edit("0x1234").unwrap(),
+            NodeKind::UInt(IntWidth::W16)
+                .parse_edit("0x1234", 8)
+                .unwrap(),
             0x1234u16.to_le_bytes()
         );
         assert_eq!(
-            NodeKind::Hex(IntWidth::W8).parse_edit("255").unwrap(),
+            NodeKind::Hex(IntWidth::W8).parse_edit("255", 8).unwrap(),
             vec![255]
         );
         // out of range
         assert_eq!(
-            NodeKind::UInt(IntWidth::W8).parse_edit("256"),
+            NodeKind::UInt(IntWidth::W8).parse_edit("256", 8),
             Err(EditErr::OutOfRange)
         );
         assert_eq!(
-            NodeKind::Int(IntWidth::W8).parse_edit("128"),
+            NodeKind::Int(IntWidth::W8).parse_edit("128", 8),
             Err(EditErr::OutOfRange)
         );
         assert_eq!(
-            NodeKind::Int(IntWidth::W8).parse_edit("-128").unwrap(),
+            NodeKind::Int(IntWidth::W8).parse_edit("-128", 8).unwrap(),
             vec![0x80]
         );
     }
@@ -781,16 +804,16 @@ mod tests {
     #[test]
     fn parse_edit_float_bool_vec() {
         assert_eq!(
-            NodeKind::Float32.parse_edit("1.5").unwrap(),
+            NodeKind::Float32.parse_edit("1.5", 8).unwrap(),
             1.5f32.to_le_bytes()
         );
-        assert_eq!(NodeKind::Bool.parse_edit("true").unwrap(), vec![1]);
-        assert_eq!(NodeKind::Bool.parse_edit("0").unwrap(), vec![0]);
-        let v = NodeKind::Vec2.parse_edit("1.0, 2.0").unwrap();
+        assert_eq!(NodeKind::Bool.parse_edit("true", 8).unwrap(), vec![1]);
+        assert_eq!(NodeKind::Bool.parse_edit("0", 8).unwrap(), vec![0]);
+        let v = NodeKind::Vec2.parse_edit("1.0, 2.0", 8).unwrap();
         assert_eq!(&v[..4], &1.0f32.to_le_bytes());
         assert_eq!(&v[4..], &2.0f32.to_le_bytes());
         assert_eq!(
-            NodeKind::Vec3.parse_edit("1,2"),
+            NodeKind::Vec3.parse_edit("1,2", 8),
             Err(EditErr::WrongArity {
                 expected: 3,
                 got: 2
@@ -804,25 +827,25 @@ mod tests {
             encoding: TextEncoding::Utf8,
             len: 4,
         };
-        assert_eq!(txt.parse_edit("hello").unwrap(), b"hell".to_vec());
-        assert_eq!(txt.parse_edit("hi").unwrap(), b"hi\0\0".to_vec());
+        assert_eq!(txt.parse_edit("hello", 8).unwrap(), b"hell".to_vec());
+        assert_eq!(txt.parse_edit("hi", 8).unwrap(), b"hi\0\0".to_vec());
     }
 
     #[test]
     fn parse_edit_not_editable() {
         assert_eq!(
-            NodeKind::Padding(4).parse_edit("x"),
+            NodeKind::Padding(4).parse_edit("x", 8),
             Err(EditErr::NotEditable)
         );
         assert_eq!(
-            NodeKind::ClassInstance { class_id: 1 }.parse_edit("x"),
+            NodeKind::ClassInstance { class_id: 1 }.parse_edit("x", 8),
             Err(EditErr::NotEditable)
         );
     }
 
     #[test]
     fn pointer_roundtrip_edit() {
-        let bytes = NodeKind::Pointer.parse_edit("0x7fff1234").unwrap();
+        let bytes = NodeKind::Pointer.parse_edit("0x7fff1234", 8).unwrap();
         assert_eq!(u64::from_le_bytes(bytes.try_into().unwrap()), 0x7fff_1234);
     }
 
@@ -832,7 +855,7 @@ mod tests {
         let reg = ClassRegistry::new();
         let ctx = FmtCtx::new(&reg);
         for kind in [NodeKind::Vec2, NodeKind::Vec3, NodeKind::Vec4] {
-            for len in 0..=kind.fixed_size() {
+            for len in 0..=kind.fixed_size(8) {
                 let _ = kind.format(&vec![0u8; len], &ctx);
             }
         }
@@ -863,7 +886,7 @@ mod tests {
         let reg = ClassRegistry::new();
         let c = ctx(&reg);
         let k = hp_enum();
-        assert_eq!(k.fixed_size(), 4);
+        assert_eq!(k.fixed_size(8), 4);
         assert_eq!(k.format(&0i32.to_le_bytes(), &c), "Idle (0)");
         assert_eq!(k.format(&2i32.to_le_bytes(), &c), "Dead (2)");
         // negative variants match through sign extension, not raw bits
@@ -875,13 +898,13 @@ mod tests {
     #[test]
     fn enum_parses_variant_names_case_insensitively_and_numbers() {
         let k = hp_enum();
-        assert_eq!(k.parse_edit("Dead").unwrap(), 2i32.to_le_bytes());
-        assert_eq!(k.parse_edit("  dead ").unwrap(), 2i32.to_le_bytes());
-        assert_eq!(k.parse_edit("Invalid").unwrap(), (-1i32).to_le_bytes());
-        assert_eq!(k.parse_edit("7").unwrap(), 7i32.to_le_bytes());
-        assert_eq!(k.parse_edit("0x10").unwrap(), 16i32.to_le_bytes());
+        assert_eq!(k.parse_edit("Dead", 8).unwrap(), 2i32.to_le_bytes());
+        assert_eq!(k.parse_edit("  dead ", 8).unwrap(), 2i32.to_le_bytes());
+        assert_eq!(k.parse_edit("Invalid", 8).unwrap(), (-1i32).to_le_bytes());
+        assert_eq!(k.parse_edit("7", 8).unwrap(), 7i32.to_le_bytes());
+        assert_eq!(k.parse_edit("0x10", 8).unwrap(), 16i32.to_le_bytes());
         // a name that is not a variant is a parse error, not a silent zero
-        assert!(matches!(k.parse_edit("Nope"), Err(EditErr::Parse(_))));
+        assert!(matches!(k.parse_edit("Nope", 8), Err(EditErr::Parse(_))));
     }
 
     #[test]
@@ -892,7 +915,7 @@ mod tests {
             variants: Vec::new(),
         };
         assert_eq!(k.format(&[200], &ctx(&reg)), "-56");
-        assert_eq!(k.parse_edit("-56").unwrap(), vec![200]);
+        assert_eq!(k.parse_edit("-56", 8).unwrap(), vec![200]);
     }
 
     #[test]
@@ -907,7 +930,7 @@ mod tests {
             NodeKind::Bitfield(IntWidth::W16).format(&0x0102u16.to_le_bytes(), &c),
             "00000001 00000010"
         );
-        assert_eq!(NodeKind::Bitfield(IntWidth::W32).fixed_size(), 4);
+        assert_eq!(NodeKind::Bitfield(IntWidth::W32).fixed_size(8), 4);
     }
 
     #[test]
@@ -926,13 +949,13 @@ mod tests {
     fn bitfield_parses_binary_hex_and_decimal() {
         let k = NodeKind::Bitfield(IntWidth::W8);
         // bare digits are binary, matching what the field displays
-        assert_eq!(k.parse_edit("1010").unwrap(), vec![0b1010]);
-        assert_eq!(k.parse_edit("0b1111_0000").unwrap(), vec![0xF0]);
-        assert_eq!(k.parse_edit("0000 0011").unwrap(), vec![3]);
-        assert_eq!(k.parse_edit("0xF0").unwrap(), vec![0xF0]);
+        assert_eq!(k.parse_edit("1010", 8).unwrap(), vec![0b1010]);
+        assert_eq!(k.parse_edit("0b1111_0000", 8).unwrap(), vec![0xF0]);
+        assert_eq!(k.parse_edit("0000 0011", 8).unwrap(), vec![3]);
+        assert_eq!(k.parse_edit("0xF0", 8).unwrap(), vec![0xF0]);
         // a value with a digit outside {0,1} falls back to decimal
-        assert_eq!(k.parse_edit("42").unwrap(), vec![42]);
-        assert_eq!(k.parse_edit("256"), Err(EditErr::OutOfRange));
+        assert_eq!(k.parse_edit("42", 8).unwrap(), vec![42]);
+        assert_eq!(k.parse_edit("256", 8), Err(EditErr::OutOfRange));
     }
 
     #[test]
@@ -942,7 +965,7 @@ mod tests {
         let k = NodeKind::Bitfield(IntWidth::W32);
         for v in [0u32, 1, 0xDEAD_BEEF, u32::MAX] {
             let shown = k.format(&v.to_le_bytes(), &c);
-            assert_eq!(k.parse_edit(&shown).unwrap(), v.to_le_bytes(), "{shown}");
+            assert_eq!(k.parse_edit(&shown, 8).unwrap(), v.to_le_bytes(), "{shown}");
         }
     }
 
@@ -953,10 +976,10 @@ mod tests {
             encoding: TextEncoding::Utf8,
             max: 64,
         };
-        assert_eq!(k.fixed_size(), 8);
+        assert_eq!(k.fixed_size(8), 8);
         // the node holds the pointer, so an edit writes an address here — the
         // string lives at the target and is not editable through this field
-        let bytes = k.parse_edit("0x7fff1234").unwrap();
+        let bytes = k.parse_edit("0x7fff1234", 8).unwrap();
         assert_eq!(u64::from_le_bytes(bytes.try_into().unwrap()), 0x7fff_1234);
         assert_eq!(k.format(&0u64.to_le_bytes(), &ctx(&reg)), "NULL");
     }
@@ -967,5 +990,43 @@ mod tests {
         assert_eq!(TextEncoding::Utf16.bytes_for(64), 128);
         // saturating: an absurd max must not wrap the read size to something small
         assert_eq!(TextEncoding::Utf16.bytes_for(usize::MAX), usize::MAX);
+    }
+}
+
+#[cfg(test)]
+mod ptr_width_tests {
+    use super::*;
+    use crate::class::{ClassRegistry, PtrWidth};
+
+    #[test]
+    fn a_32_bit_pointer_edit_writes_four_bytes() {
+        // Writing 8 would clobber the two fields that follow on a 32-bit target.
+        let bytes = NodeKind::Pointer.parse_edit("0x08048000", 4).unwrap();
+        assert_eq!(bytes, 0x0804_8000u32.to_le_bytes());
+        assert_eq!(NodeKind::Pointer.parse_edit("0x1000", 8).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn an_address_too_wide_for_the_target_is_rejected() {
+        // Silently truncating would write a different address than the user typed.
+        assert_eq!(
+            NodeKind::Pointer.parse_edit("0x100000000", 4),
+            Err(EditErr::OutOfRange)
+        );
+        assert!(NodeKind::Pointer.parse_edit("0xFFFFFFFF", 4).is_ok());
+    }
+
+    #[test]
+    fn a_32_bit_pointer_formats_from_four_bytes() {
+        let mut reg = ClassRegistry::new();
+        reg.set_ptr_width(PtrWidth::P32);
+        let ctx = FmtCtx::new(&reg);
+        // eight bytes on the wire, but only the low four are the pointer
+        let raw = 0xAABB_CCDD_0804_8000u64.to_le_bytes();
+        assert_eq!(NodeKind::Pointer.format(&raw, &ctx), "0x8048000");
+
+        reg.set_ptr_width(PtrWidth::P64);
+        let ctx = FmtCtx::new(&reg);
+        assert_eq!(NodeKind::Pointer.format(&raw, &ctx), "0xAABBCCDD08048000");
     }
 }

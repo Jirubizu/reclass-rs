@@ -475,9 +475,16 @@ impl AppState {
         let reg = &mut self.project.registry;
         let name = format!("Auto{}", reg.len());
         let target = reg.add_class(name);
+        // One field per pointer-width word, so the auto class's rows line up
+        // with the target's natural slot size on both 32- and 64-bit targets.
+        let (word, step) = if reg.pointer_bytes() == 4 {
+            (IntWidth::W32, 4)
+        } else {
+            (IntWidth::W64, 8)
+        };
         reg.push_nodes(
             target,
-            (0..16).map(|i| Node::new(format!("field_{:X}", i * 8), NodeKind::Hex(IntWidth::W64))),
+            (0..16).map(|i| Node::new(format!("field_{:X}", i * step), NodeKind::Hex(word))),
         )
         .map_err(AppError::from)?;
         reg.set_kind(owner, idx, NodeKind::ClassPtr { class_id: target })
@@ -488,7 +495,7 @@ impl AppState {
 
     /// Write a new value to a scalar node (parsed by its kind).
     pub fn write_value(&mut self, addr: u64, kind: &NodeKind, input: &str) -> Result<(), AppError> {
-        let bytes = kind.parse_edit(input)?;
+        let bytes = kind.parse_edit(input, self.project.registry.pointer_bytes())?;
         let backend = self.backend.as_ref().ok_or(AppError::NotAttached)?;
         backend.write(addr, &bytes).map_err(AppError::from)
     }

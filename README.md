@@ -82,6 +82,7 @@ reclass-rs/
     app/               # reclass — egui (default) + ratatui (--tui) front-ends, MCP server, plugin host
     official-plugins/  # reclass-official-plugins — the bundled plugins, one cdylib
     example-plugin/    # reclass-example-plugin — reference plugin, the API by example
+  docs/plugins.md      # writing a plugin: exports, ABI contract, hooks
   docs/vmem-api.md     # vmem capability → API mapping
 ```
 
@@ -257,6 +258,12 @@ project. They're loaded (GUI builds only) from, in order:
 Manage them in *View → Plugins*: enable/disable, open a plugin's window, or
 reload one after a rebuild. A plugin that panics is disabled with its message
 recorded rather than taking down the session.
+
+Writing one: **[`docs/plugins.md`](docs/plugins.md)** is the authoring guide —
+required exports, the ABI fingerprint rule, every hook in the order the host
+calls it, every `PluginAction`, settings persistence, and a minimal plugin that
+compiles as written. [`crates/example-plugin`](crates/example-plugin/) is the
+same thing as working code.
 
 All of that persists. Each plugin's enabled flag, window state, and its own
 configuration are written to `settings.ron` under `plugins:`, keyed by plugin

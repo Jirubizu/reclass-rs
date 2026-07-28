@@ -3511,7 +3511,7 @@ dependencies = [
 
 [[package]]
 name = "reclass"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -3531,7 +3531,7 @@ dependencies = [
 
 [[package]]
 name = "reclass-backend-vmem"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "libc",
  "reclass-core",
@@ -3541,7 +3541,7 @@ dependencies = [
 
 [[package]]
 name = "reclass-core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "criterion",
  "flate2",
@@ -3553,14 +3553,14 @@ dependencies = [
 
 [[package]]
 name = "reclass-example-plugin"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "reclass",
 ]
 
 [[package]]
 name = "reclass-official-plugins"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "reclass",
  "serde",

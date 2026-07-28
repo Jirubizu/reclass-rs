@@ -63,8 +63,10 @@ jobs:
           sudo sysctl -w kernel.yama.ptrace_scope=0 || true
           cargo test --workspace --all-features
 
+      # Every registered bench, not just `engine`: a bench that stops compiling
+      # is a broken test nobody runs until they need it.
       - name: bench compile-check
-        run: cargo bench -p reclass-core --bench engine --no-run
+        run: cargo bench -p reclass-core --all-features --no-run
 
   release-build:
     name: release build (binary + default plugins)

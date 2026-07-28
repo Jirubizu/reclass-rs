@@ -360,4 +360,102 @@ mod tests {
         // reasonable nesting still parses
         assert!(AddrExpr::parse("[[[0x10]]]").is_ok());
     }
+
+    /// Deterministic xorshift64*, so a failure is reproducible from the seed
+    /// printed in the assertion rather than needing a fuzz corpus.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    #[test]
+    fn arbitrary_input_never_panics_or_hangs() {
+        // The parser is the only hand-written one in the crate and it takes
+        // user input on every keystroke of the address bar, so the contract
+        // that matters is "always returns" — not that anything parses.
+        const ALPHABET: &[u8] = b"[]<>()+-*/0123456789abcdefxX. \t\0\xff";
+        let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+        let mut ok = 0usize;
+        for case in 0..20_000 {
+            let len = rng.below(24) as usize;
+            let s: String = (0..len)
+                .map(|_| ALPHABET[rng.below(ALPHABET.len() as u64) as usize] as char)
+                .collect();
+            // A panic here fails the test by unwinding; the assertion exists so
+            // a silent change to "always Err" is visible too.
+            if AddrExpr::parse(&s).is_ok() {
+                ok += 1;
+            }
+            assert!(case < 20_000);
+        }
+        assert!(ok > 0, "the generator never produced a valid expression");
+    }
+
+    /// Build a random expression string alongside the value it must evaluate to.
+    ///
+    /// Deref is excluded: its value depends on target memory, and the point
+    /// here is that parsing and arithmetic agree.
+    fn gen_expr(rng: &mut Rng, depth: u32) -> (String, u64) {
+        if depth == 0 || rng.below(3) == 0 {
+            let v = rng.next() % 0x1_0000;
+            return if rng.below(2) == 0 {
+                (format!("0x{v:X}"), v)
+            } else {
+                (format!("{v}"), v)
+            };
+        }
+        let (ls, lv) = gen_expr(rng, depth - 1);
+        let (rs, rv) = gen_expr(rng, depth - 1);
+        match rng.below(4) {
+            0 => (format!("({ls} + {rs})"), lv.wrapping_add(rv)),
+            1 => (format!("({ls} - {rs})"), lv.wrapping_sub(rv)),
+            2 => (format!("({ls} * {rs})"), lv.wrapping_mul(rv)),
+            _ if rv != 0 => (format!("({ls} / {rs})"), lv / rv),
+            _ => (format!("({ls} + {rs})"), lv.wrapping_add(rv)),
+        }
+    }
+
+    #[test]
+    fn generated_expressions_parse_and_evaluate_to_the_expected_value() {
+        let backend = crate::backend::MockBackend::new();
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        for i in 0..2_000 {
+            let (src, expected) = gen_expr(&mut rng, 4);
+            let got = AddrExpr::resolve(&src, &backend)
+                .unwrap_or_else(|e| panic!("case {i}: {src} failed: {e}"));
+            assert_eq!(got, expected, "case {i}: {src}");
+        }
+    }
+
+    #[test]
+    fn precedence_holds_without_parentheses() {
+        // The generator always parenthesizes, so precedence needs its own case.
+        let b = crate::backend::MockBackend::new();
+        for (src, want) in [
+            ("2 + 3 * 4", 14u64),
+            ("2 * 3 + 4", 10),
+            ("20 / 4 - 1", 4),
+            ("1 - 2 + 3", 2),
+            ("0x10 + 0x10 * 2", 0x30),
+        ] {
+            assert_eq!(AddrExpr::resolve(src, &b).unwrap(), want, "{src}");
+        }
+    }
+
+    #[test]
+    fn whitespace_is_insignificant_between_tokens() {
+        let b = crate::backend::MockBackend::new();
+        let dense = AddrExpr::resolve("0x10+0x20*2", &b).unwrap();
+        let loose = AddrExpr::resolve("  0x10\t+\n0x20 *  2 ", &b).unwrap();
+        assert_eq!(dense, loose);
+    }
 }

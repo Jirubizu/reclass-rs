@@ -1599,3 +1599,202 @@ mod ptr_width_tests {
         assert_eq!(rows.len(), 2, "{rows:#?}");
     }
 }
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+    use crate::backend::MockBackend;
+    use crate::node::{IntWidth, Node};
+
+    fn class_of(reg: &mut ClassRegistry, name: &str, kind: NodeKind, n: usize) -> ClassId {
+        let c = reg.add_class(name);
+        for i in 0..n {
+            reg.push_node(c, Node::new(format!("f{i}"), kind.clone()))
+                .expect("class was just created");
+        }
+        c
+    }
+
+    #[test]
+    fn an_array_past_the_render_cap_ends_in_a_count_row() {
+        // The cap bounds rows, not the model: the elements still exist, so the
+        // table has to say how many it is not showing rather than just stop.
+        let mut reg = ClassRegistry::new();
+        let c = reg.add_class("Big");
+        reg.push_node(
+            c,
+            Node::new(
+                "xs",
+                NodeKind::Array {
+                    element: Box::new(NodeKind::Hex(IntWidth::W8)),
+                    count: 1000,
+                },
+            ),
+        )
+        .unwrap();
+
+        let m = MockBackend::new();
+        m.put(0x1000, vec![0u8; 1000]);
+        let mut eng = Engine::new();
+        eng.set_array_limit(10);
+
+        let rows = eng.snapshot(
+            &m,
+            &reg,
+            &[Root {
+                class_id: c,
+                base: 0x1000,
+            }],
+            &ExpandState::new(),
+            None,
+        );
+        // header + 10 elements + the "… more" row
+        assert_eq!(rows.len(), 12, "{rows:#?}");
+        assert_eq!(rows.last().unwrap().name, "… 990 more");
+        // and it sits after the last rendered element, not at the array's start
+        assert_eq!(rows.last().unwrap().address, 0x1000 + 10);
+    }
+
+    #[test]
+    fn an_array_within_the_cap_has_no_count_row() {
+        let mut reg = ClassRegistry::new();
+        let c = reg.add_class("Small");
+        reg.push_node(
+            c,
+            Node::new(
+                "xs",
+                NodeKind::Array {
+                    element: Box::new(NodeKind::Hex(IntWidth::W8)),
+                    count: 4,
+                },
+            ),
+        )
+        .unwrap();
+        let m = MockBackend::new();
+        m.put(0x1000, vec![0u8; 16]);
+        let mut eng = Engine::new();
+        eng.set_array_limit(10);
+        let rows = eng.snapshot(
+            &m,
+            &reg,
+            &[Root {
+                class_id: c,
+                base: 0x1000,
+            }],
+            &ExpandState::new(),
+            None,
+        );
+        assert_eq!(rows.len(), 5);
+        assert!(!rows.iter().any(|r| r.name.contains("more")));
+    }
+    #[test]
+    fn the_array_limit_is_never_zero_by_either_route() {
+        // Two paths reach the cap and both have to refuse 0, or an array
+        // renders no elements at all.
+        let mut eng = Engine::new();
+        eng.set_array_limit(0);
+        assert_eq!(eng.array_limit(), 1, "an explicit 0 clamps to one element");
+        // A `default()` engine never went through the setter, so its unset 0
+        // falls back to the real default instead.
+        assert_eq!(Engine::default().array_limit(), Engine::DEFAULT_ARRAY_LIMIT);
+        assert_eq!(Engine::new().array_limit(), Engine::DEFAULT_ARRAY_LIMIT);
+    }
+
+    #[test]
+    fn every_row_carries_the_index_of_the_view_it_belongs_to() {
+        // Rows from every open view arrive in one flat vec; `root` is the only
+        // thing telling the table which pane a row goes in.
+        let mut reg = ClassRegistry::new();
+        let a = class_of(&mut reg, "A", NodeKind::Hex(IntWidth::W32), 2);
+        let b = class_of(&mut reg, "B", NodeKind::Hex(IntWidth::W32), 3);
+
+        let m = MockBackend::new();
+        m.put(0x1000, vec![0x11u8; 16]);
+        m.put(0x2000, vec![0x22u8; 16]);
+
+        let mut eng = Engine::new();
+        let rows = eng.snapshot(
+            &m,
+            &reg,
+            &[
+                Root {
+                    class_id: a,
+                    base: 0x1000,
+                },
+                Root {
+                    class_id: b,
+                    base: 0x2000,
+                },
+            ],
+            &ExpandState::new(),
+            None,
+        );
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows.iter().filter(|r| r.root == 0).count(), 2);
+        assert_eq!(rows.iter().filter(|r| r.root == 1).count(), 3);
+        // addresses stay with their own root
+        assert!(
+            rows.iter()
+                .filter(|r| r.root == 0)
+                .all(|r| r.address >= 0x1000 && r.address < 0x2000)
+        );
+        // and both views fill from one batched read
+        assert_eq!(eng.last_read_levels(), 1);
+        assert_eq!(m.scatter_calls(), 1);
+    }
+
+    #[test]
+    fn the_same_class_open_in_two_views_renders_at_both_addresses() {
+        let mut reg = ClassRegistry::new();
+        let c = class_of(&mut reg, "C", NodeKind::Int(IntWidth::W32), 1);
+        let m = MockBackend::new();
+        m.put(0x1000, 7i32.to_le_bytes().to_vec());
+        m.put(0x2000, 9i32.to_le_bytes().to_vec());
+
+        let mut eng = Engine::new();
+        let rows = eng.snapshot(
+            &m,
+            &reg,
+            &[
+                Root {
+                    class_id: c,
+                    base: 0x1000,
+                },
+                Root {
+                    class_id: c,
+                    base: 0x2000,
+                },
+            ],
+            &ExpandState::new(),
+            None,
+        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].value, "7");
+        assert_eq!(rows[1].value, "9");
+    }
+
+    #[test]
+    fn a_dangling_class_reference_renders_instead_of_vanishing() {
+        // `remove_class` rewrites references, but a hand-edited project or an
+        // MCP call can still leave one. The row must appear, not silently drop.
+        let mut reg = ClassRegistry::new();
+        let c = reg.add_class("C");
+        reg.push_node(c, Node::new("ghost", NodeKind::ClassPtr { class_id: 999 }))
+            .unwrap();
+        let m = MockBackend::new();
+        m.put(0x1000, vec![0u8; 16]);
+        let mut eng = Engine::new();
+        let rows = eng.snapshot(
+            &m,
+            &reg,
+            &[Root {
+                class_id: c,
+                base: 0x1000,
+            }],
+            &ExpandState::new(),
+            None,
+        );
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].type_label.contains("999"), "{}", rows[0].type_label);
+    }
+}

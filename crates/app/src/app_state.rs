@@ -226,6 +226,8 @@ pub struct AppState {
     /// Nodes copied from a class, waiting to be pasted. Owned by the model, not
     /// the front-end, so MCP and plugin callers share one clipboard with the UI.
     clipboard: Vec<Node>,
+    /// Pid the backend is attached to, for jobs that cannot borrow it.
+    attached_pid: Option<i32>,
 }
 
 impl Default for AppState {
@@ -249,6 +251,7 @@ impl AppState {
             expr_cache: HashMap::new(),
             history: History::default(),
             clipboard: Vec::new(),
+            attached_pid: None,
         }
     }
 
@@ -330,6 +333,21 @@ impl AppState {
     pub fn set_backend(&mut self, backend: Box<dyn MemoryBackend>) {
         self.backend = Some(backend);
         self.refresh_regions();
+    }
+
+    /// Record which pid the current backend is attached to.
+    ///
+    /// The backend itself is `Box<dyn MemoryBackend>` with no `Send` bound, so
+    /// a background job (the pointer scanner) cannot borrow it. It re-attaches
+    /// by pid instead, which needs the pid kept somewhere the UI can reach.
+    pub fn set_attached_pid(&mut self, pid: Option<i32>) {
+        self.attached_pid = pid;
+    }
+
+    /// The pid the current backend is attached to, if known.
+    #[must_use]
+    pub fn attached_pid(&self) -> Option<i32> {
+        self.attached_pid
     }
 
     /// Whether a backend is attached.

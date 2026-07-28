@@ -14,6 +14,7 @@ pub mod engine;
 pub mod expr;
 pub mod node;
 pub mod project;
+pub mod scan;
 
 #[cfg(feature = "mock")]
 pub use backend::MockBackend;
@@ -22,3 +23,4 @@ pub use class::{Class, ClassId, ClassRegistry, PtrWidth, RegistryError};
 pub use engine::{Engine, ExpandState, PathSeg, Root, Row};
 pub use expr::{AddrExpr, BinOp, ExprError};
 pub use node::{AddrInfo, EditErr, EnumVariant, FmtCtx, IntWidth, Node, NodeKind, TextEncoding};
+pub use scan::{PointerPath, ScanConfig, scan_pointers};

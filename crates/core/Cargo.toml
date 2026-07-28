@@ -30,3 +30,7 @@ harness = false
 [[bench]]
 name = "history"
 harness = false
+
+[[bench]]
+name = "scan"
+harness = false

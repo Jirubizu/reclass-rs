@@ -249,6 +249,7 @@ impl ReClassApp {
                     ui.separator();
                     ui.checkbox(&mut self.show_settings, "Settings");
                     ui.checkbox(&mut self.show_plugins, "Plugins");
+                    ui.checkbox(&mut self.scan.open, "Pointer scan");
                     ui.separator();
                     // A property of the target, not of the app: it is stored in
                     // the project and changes every offset after a pointer.

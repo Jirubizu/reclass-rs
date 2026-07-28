@@ -19,6 +19,7 @@ use crate::plugin::{PluginAction, PluginManager};
 
 mod flash;
 mod panels;
+mod scan;
 mod search;
 mod settings;
 mod table;
@@ -201,6 +202,8 @@ struct ReClassApp {
     /// Address a goto is waiting to scroll to, resolved against the filtered
     /// rows on the next frame.
     goto_target: Option<u64>,
+    /// Pointer-scan window and its background worker.
+    scan: scan::ScanJob,
     selected_classes: std::collections::HashSet<ClassId>,
     class_anchor: Option<usize>,
     renaming_class: Option<ClassRename>,
@@ -271,6 +274,7 @@ impl ReClassApp {
             search: String::new(),
             goto_input: String::new(),
             goto_target: None,
+            scan: scan::ScanJob::default(),
             selected_classes: std::collections::HashSet::new(),
             class_anchor: None,
             renaming_class: None,
@@ -325,6 +329,7 @@ impl ReClassApp {
                     self.state.set_backend(Box::new(b));
                     // remember the process name so the project can auto-attach on load
                     self.state.project.attach_name = process_name(pid);
+                    self.state.set_attached_pid(Some(pid));
                     let label = self.state.project.attach_name.as_deref().unwrap_or("?");
                     self.state.status = format!("attached to {label} (pid {pid})");
                     self.error = None;
@@ -920,6 +925,7 @@ impl eframe::App for ReClassApp {
         self.plugins.show_windows(&ctx, &self.state);
         self.plugins_window(&ctx);
         self.updates_window(&ctx);
+        self.scan_window(&ctx, &mut actions);
 
         for a in actions {
             self.apply(a);

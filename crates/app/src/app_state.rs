@@ -4,6 +4,7 @@
 use reclass_core::backend::Region;
 use reclass_core::codegen::{Language, generate, generate_project};
 use reclass_core::project::{Project, ProjectError, View};
+use reclass_core::rcnet;
 use reclass_core::{
     AddrExpr, AddrInfo, ClassId, ClassRegistry, EditErr, Engine, ExpandState, IntWidth, MemError,
     MemoryBackend, Node, NodeKind, PathSeg, RegistryError, Root, Row,
@@ -25,6 +26,9 @@ pub enum AppError {
     /// Saving or loading a project failed.
     #[error(transparent)]
     Project(#[from] ProjectError),
+    /// Importing or exporting a ReClass.NET `.rcnet` file failed.
+    #[error(transparent)]
+    Rcnet(#[from] rcnet::RcnetError),
     /// The edit would create an inline `ClassInstance` cycle.
     #[error("would create an inline class cycle")]
     Cycle,
@@ -967,6 +971,49 @@ impl AppState {
             })?;
         }
         Ok(files.len())
+    }
+
+    /// Replace the registry with the contents of a ReClass.NET `.rcnet` file.
+    ///
+    /// Undoable, unlike [`load`](Self::load): this replaces the classes but
+    /// keeps the session — a mis-aimed import should be one `Ctrl+Z`, not a
+    /// reason to reopen the project.
+    ///
+    /// Returns the conversion report; a non-empty `notes` means the file used
+    /// something this model approximates.
+    pub fn import_rcnet(&mut self, path: &str) -> Result<rcnet::Report, AppError> {
+        let bytes = std::fs::read(path).map_err(|e| AppError::Io {
+            path: path.to_string(),
+            source: e,
+        })?;
+        let (registry, report) = rcnet::import(&bytes)?;
+        self.snapshot();
+        self.project.registry = registry;
+        self.project.views.clear();
+        self.expr_cache.clear();
+        // Open the largest class: with no views the table shows nothing, and
+        // the biggest class is almost always the one the file is about.
+        if let Some(biggest) = self
+            .project
+            .registry
+            .ids()
+            .into_iter()
+            .max_by_key(|&id| self.project.registry.size_of(id))
+        {
+            self.open_view(biggest);
+        }
+        self.resync_after_restore();
+        Ok(report)
+    }
+
+    /// Write the registry as a ReClass.NET `.rcnet` file.
+    pub fn export_rcnet(&self, path: &str) -> Result<rcnet::Report, AppError> {
+        let (bytes, report) = rcnet::export(&self.project.registry)?;
+        std::fs::write(path, bytes).map_err(|e| AppError::Io {
+            path: path.to_string(),
+            source: e,
+        })?;
+        Ok(report)
     }
 
     /// Save the project to a RON file.

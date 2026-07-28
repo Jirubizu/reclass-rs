@@ -11,7 +11,7 @@ gui = ["dep:eframe", "dep:egui", "dep:libloading", "dep:parking_lot"]
 tui = ["dep:ratatui", "dep:crossterm"]
 
 [dependencies]
-reclass-core = { workspace = true }
+reclass-core = { workspace = true, features = ["rcnet"] }
 reclass-backend-vmem = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

@@ -419,6 +419,10 @@ fn tool_defs() -> Vec<(&'static str, String, Value)> {
             obj(json!({ "targets": { "type": "array" } }), json!(["targets"]))),
         ("paste_nodes", "Paste the clipboard into `class_id`, after field `after` (appended when omitted).".into(),
             obj(json!({ "class_id": { "type": "integer" }, "after": { "type": "integer" } }), json!(["class_id"]))),
+        ("import_rcnet", "Replace the classes with a ReClass.NET .rcnet file. Returns counts and any approximations made.".into(),
+            obj(json!({ "path": { "type": "string" } }), json!(["path"]))),
+        ("export_rcnet", "Write the classes as a ReClass.NET .rcnet file.".into(),
+            obj(json!({ "path": { "type": "string" } }), json!(["path"]))),
     ]
 }
 
@@ -638,6 +642,14 @@ fn tool(state: &mut AppState, name: &str, a: &Value) -> Result<Value, String> {
                 .and_then(Value::as_u64)
                 .and_then(|v| usize::try_from(v).ok());
             Ok(json!({ "pasted": state.paste_nodes(arg_u32(a, "class_id")?, after)? }))
+        }
+        "import_rcnet" => {
+            let r = state.import_rcnet(arg_str(a, "path")?)?;
+            Ok(json!({ "classes": r.classes, "nodes": r.nodes, "notes": r.notes }))
+        }
+        "export_rcnet" => {
+            let r = state.export_rcnet(arg_str(a, "path")?)?;
+            Ok(json!({ "classes": r.classes, "nodes": r.nodes, "notes": r.notes }))
         }
         other => Err(format!("unknown tool: {other}")),
     }

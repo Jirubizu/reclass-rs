@@ -97,13 +97,28 @@ struct ClassRename {
     focused: bool,
 }
 
-/// Modes for the in-app browser: pick a `.ron` file (Open/Save) or a directory
-/// to generate a `vmem` project into (GenProject).
+/// Modes for the in-app browser: pick a `.ron` project (Open/Save), a `.rcnet`
+/// ReClass.NET file (Import/Export), or a directory to generate a `vmem`
+/// project into (GenProject).
 #[derive(Clone, Copy, PartialEq)]
 enum FileMode {
     Open,
     Save,
+    ImportRcnet,
+    ExportRcnet,
     GenProject,
+}
+
+impl FileMode {
+    /// Extension this mode filters on and appends, or `None` when it picks a
+    /// directory rather than a file.
+    fn ext(self) -> Option<&'static str> {
+        match self {
+            FileMode::Open | FileMode::Save => Some(".ron"),
+            FileMode::ImportRcnet | FileMode::ExportRcnet => Some(".rcnet"),
+            FileMode::GenProject => None,
+        }
+    }
 }
 
 /// Minimal, dependency-free file browser state (egui-rendered).
@@ -153,6 +168,10 @@ enum Action {
         class: ClassId,
         after: Option<usize>,
     },
+    /// Replace the registry from a ReClass.NET `.rcnet` file.
+    ImportRcnet(String),
+    /// Write the registry as a ReClass.NET `.rcnet` file.
+    ExportRcnet(String),
     ChangeKind(ClassId, usize, NodeKind),
     SetArrayCount(ClassId, usize, usize),
     ExpandAll,
@@ -205,6 +224,9 @@ struct ReClassApp {
     /// Pointer-scan window and its background worker.
     scan: scan::ScanJob,
     selected_classes: std::collections::HashSet<ClassId>,
+    /// Approximations reported by the last `.rcnet` conversion, shown once in
+    /// a dismissible window. Empty means the conversion was exact.
+    rcnet_notes: Vec<String>,
     class_anchor: Option<usize>,
     renaming_class: Option<ClassRename>,
     flash: FlashTracker,
@@ -275,6 +297,7 @@ impl ReClassApp {
             goto_input: String::new(),
             goto_target: None,
             scan: scan::ScanJob::default(),
+            rcnet_notes: Vec::new(),
             selected_classes: std::collections::HashSet::new(),
             class_anchor: None,
             renaming_class: None,
@@ -473,6 +496,28 @@ impl ReClassApp {
             Action::CollapseAll => self.state.collapse_all(),
             Action::Undo => self.time_travel(false),
             Action::Redo => self.time_travel(true),
+            Action::ImportRcnet(path) => match self.state.import_rcnet(&path) {
+                Ok(report) => {
+                    self.clear_selection();
+                    self.selected_classes.clear();
+                    self.editing = None;
+                    self.state.status = format!(
+                        "imported {} class(es), {} field(s) from {path}",
+                        report.classes, report.nodes
+                    );
+                    // The notes are the whole point of the report: an import
+                    // that quietly approximated a union is a bug report later.
+                    self.rcnet_notes = report.notes;
+                }
+                Err(e) => self.error = Some(e.to_string()),
+            },
+            Action::ExportRcnet(path) => match self.state.export_rcnet(&path) {
+                Ok(report) => {
+                    self.state.status = format!("exported {} class(es) to {path}", report.classes);
+                    self.rcnet_notes = report.notes;
+                }
+                Err(e) => self.error = Some(e.to_string()),
+            },
             Action::Save(path) => {
                 if let Err(e) = self.state.save(&path) {
                     self.error = Some(e.to_string());
@@ -667,6 +712,35 @@ impl ReClassApp {
         self.state.status = if forward { "redo" } else { "undo" }.into();
     }
 
+    /// Show what the last `.rcnet` conversion approximated.
+    ///
+    /// A separate window rather than the status line: the notes are the only
+    /// record that a union became raw bytes or a vtable became pointers, and a
+    /// one-line status would scroll them away unread.
+    fn rcnet_notes_window(&mut self, ctx: &egui::Context) {
+        if self.rcnet_notes.is_empty() {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("ReClass.NET conversion notes")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(520.0)
+            .show(ctx, |ui| {
+                ui.label("These fields could not be represented exactly:");
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        for n in &self.rcnet_notes {
+                            ui.label(format!("• {n}"));
+                        }
+                    });
+            });
+        if !open {
+            self.rcnet_notes.clear();
+        }
+    }
+
     fn clear_selection(&mut self) {
         self.selected.clear();
         self.sel_anchor = None;
@@ -769,12 +843,18 @@ impl ReClassApp {
             .map(|p| p.to_path_buf())
             .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
             .unwrap_or_else(|| std::path::PathBuf::from("."));
+        // Only a write of an existing thing has a name worth prefilling; a read
+        // mode starts blank so the listing drives the choice.
         let filename = match mode {
             FileMode::Save => std::path::Path::new(&self.save_path)
                 .file_name()
                 .map(|f| f.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "project.ron".to_string()),
-            FileMode::Open | FileMode::GenProject => String::new(),
+            FileMode::ExportRcnet => std::path::Path::new(&self.save_path)
+                .file_stem()
+                .map(|f| format!("{}.rcnet", f.to_string_lossy()))
+                .unwrap_or_else(|| "project.rcnet".to_string()),
+            FileMode::GenProject | FileMode::Open | FileMode::ImportRcnet => String::new(),
         };
         self.file_dialog = Some(FileDialog {
             mode,
@@ -926,6 +1006,7 @@ impl eframe::App for ReClassApp {
         self.plugins_window(&ctx);
         self.updates_window(&ctx);
         self.scan_window(&ctx, &mut actions);
+        self.rcnet_notes_window(&ctx);
 
         for a in actions {
             self.apply(a);

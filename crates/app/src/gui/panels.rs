@@ -20,6 +20,8 @@ impl ReClassApp {
         let title = match fd.mode {
             FileMode::Open => "Open project",
             FileMode::Save => "Save project as",
+            FileMode::ImportRcnet => "Import ReClass.NET file",
+            FileMode::ExportRcnet => "Export ReClass.NET file",
             FileMode::GenProject => "Generate vmem project into…",
         };
         let mut window_open = true;
@@ -59,7 +61,7 @@ impl ReClassApp {
                             }
                             if entry.path().is_dir() {
                                 dirs.push(name);
-                            } else if name.ends_with(".ron") && fd.mode != FileMode::GenProject {
+                            } else if fd.mode.ext().is_some_and(|e| name.ends_with(e)) {
                                 files.push(name);
                             }
                         }
@@ -110,10 +112,11 @@ impl ReClassApp {
                         if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             confirm = true;
                         }
-                        let label = if fd.mode == FileMode::Open {
-                            "Open"
-                        } else {
-                            "Save"
+                        let label = match fd.mode {
+                            FileMode::Open => "Open",
+                            FileMode::ImportRcnet => "Import",
+                            FileMode::ExportRcnet => "Export",
+                            _ => "Save",
                         };
                         if ui.button(label).clicked() {
                             confirm = true;
@@ -135,17 +138,19 @@ impl ReClassApp {
                     actions.push(Action::GenerateProject(dir));
                     keep = false;
                 }
-                FileMode::Open | FileMode::Save if !fd.filename.trim().is_empty() => {
+                mode if !fd.filename.trim().is_empty() => {
+                    let ext = mode.ext().unwrap_or(".ron");
                     let mut name = fd.filename.trim().to_string();
-                    if !name.ends_with(".ron") {
-                        name.push_str(".ron");
+                    if !name.ends_with(ext) {
+                        name.push_str(ext);
                     }
                     let path = fd.dir.join(&name).to_string_lossy().into_owned();
-                    if fd.mode == FileMode::Open {
-                        actions.push(Action::Load(path));
-                    } else {
-                        actions.push(Action::Save(path));
-                    }
+                    actions.push(match mode {
+                        FileMode::Open => Action::Load(path),
+                        FileMode::ImportRcnet => Action::ImportRcnet(path),
+                        FileMode::ExportRcnet => Action::ExportRcnet(path),
+                        _ => Action::Save(path),
+                    });
                     keep = false;
                 }
                 _ => {}
@@ -191,6 +196,15 @@ impl ReClassApp {
                     ui.separator();
                     if ui.button("Generate vmem project…").clicked() {
                         self.open_file_dialog(FileMode::GenProject);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Import ReClass.NET (.rcnet)…").clicked() {
+                        self.open_file_dialog(FileMode::ImportRcnet);
+                        ui.close();
+                    }
+                    if ui.button("Export ReClass.NET (.rcnet)…").clicked() {
+                        self.open_file_dialog(FileMode::ExportRcnet);
                         ui.close();
                     }
                 });

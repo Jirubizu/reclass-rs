@@ -11,12 +11,16 @@ default = ["mock", "serde"]
 mock = ["dep:parking_lot"]
 # serde save/load of the class registry + expressions.
 serde = ["dep:serde", "dep:ron"]
+# ReClass.NET .rcnet import/export (ZIP + XML). Off by default: it is the only
+# thing pulling a compression dependency into an otherwise four-crate core.
+rcnet = ["dep:flate2"]
 
 [dependencies]
 thiserror = { workspace = true }
 serde = { workspace = true, optional = true }
 parking_lot = { version = "0.12.5", optional = true }
 ron = { workspace = true, optional = true }
+flate2 = { version = "1", optional = true }
 
 [dev-dependencies]
 criterion = "0.8.2"

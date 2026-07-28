@@ -14,6 +14,8 @@ pub mod engine;
 pub mod expr;
 pub mod node;
 pub mod project;
+#[cfg(feature = "rcnet")]
+pub mod rcnet;
 pub mod scan;
 
 #[cfg(feature = "mock")]

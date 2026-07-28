@@ -42,6 +42,11 @@ jobs:
             libxkbcommon-dev \
             libfontconfig-dev
 
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       - name: Cache cargo
         uses: actions/cache@v5
         with:
@@ -61,7 +66,7 @@ jobs:
         # ptrace-based tests need an unrestricted ptrace scope.
         run: |
           sudo sysctl -w kernel.yama.ptrace_scope=0 || true
-          cargo test --workspace --all-features
+          cargo nextest run --workspace --all-features
 
       # Every registered bench, not just `engine`: a bench that stops compiling
       # is a broken test nobody runs until they need it.

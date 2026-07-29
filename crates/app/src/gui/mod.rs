@@ -730,6 +730,9 @@ impl ReClassApp {
                 ui.label("These fields could not be represented exactly:");
                 egui::ScrollArea::vertical()
                     .max_height(300.0)
+                    // Fill the window width; the default shrinks to the widest
+                    // label, parking the scrollbar mid-window and clipping text.
+                    .auto_shrink([false, true])
                     .show(ui, |ui| {
                         for n in &self.rcnet_notes {
                             ui.label(format!("• {n}"));

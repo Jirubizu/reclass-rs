@@ -237,6 +237,7 @@ impl ReClassApp {
         ui.label(format!("{} path(s), shortest first:", paths.len()));
         egui::ScrollArea::vertical()
             .max_height(320.0)
+            .auto_shrink([false, true])
             .show(ui, |ui| {
                 for p in paths {
                     let expr = p.to_expr();

@@ -8,6 +8,20 @@ Versions follow semver against the `reclass-core` public API. The `.ron`
 project format is forward-compatible: a file written by an older version loads
 in a newer one, with new fields taking their defaults.
 
+## 0.6.1
+
+### Fixed
+
+- **Scrollbars parked mid-window** in the ReClass.NET conversion-notes window
+  and the pointer-scan results list. Both scroll areas kept egui's default
+  `auto_shrink([true, true])`, so they sized to their widest row instead of the
+  window, which also clipped the text behind the misplaced scrollbar. Now
+  `[false, true]`, matching every other list in the app.
+
+### Changed
+
+- CI runs tests through `cargo nextest run` instead of `cargo test`.
+
 ## 0.6.0
 
 ### Added

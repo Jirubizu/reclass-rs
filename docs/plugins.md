@@ -2,6 +2,10 @@
 
 Plugins are native dynamic libraries (`.so` / `.dylib` / `.dll`) that observe memory snapshots and request mutations. They load at startup from user config directories or bundled next to the binary, and run inside the host process with read-only access to the current state.
 
+> ⚠️ A plugin is native code running in-process with full access to the target's memory. Only load ones you trust.
+
+Already have one and just want to run it? Drop it in a [discovery directory](#plugin-discovery) and manage it in *View → Plugins*: enable/disable, open its window, or reload it after a rebuild. A plugin that panics is disabled with its message recorded rather than taking down the session. The eight [bundled plugins](#bundled-plugins) ship pre-installed in the release tarball.
+
 ## The ABI Contract
 
 Rust has **no stable ABI**. Everything flowing across the library boundary — the `dyn HostPlugin` fat pointer, `Row`, `NodeKind`, `AppState`, `Vec`, `String`, `egui::Context` — has a layout the compiler is free to change between versions. A plugin is sound **only** when built with the *identical* toolchain as the host (same `rustc`, same dependency versions, same codegen flags).
@@ -30,11 +34,11 @@ Every hook runs inside `std::panic::catch_unwind`. A panicking plugin is disable
 
 A plugin library must export one C-ABI symbol:
 
-- **`reclass_plugin_create`** — Entry point, returns a boxed `Box<dyn HostPlugin>`. Use the [`reclass_plugin_create!`](https://docs.rs/reclass/latest/reclass/macro.reclass_plugin_create.html) macro.
+- **`reclass_plugin_create`** — Entry point, returns a boxed `Box<dyn HostPlugin>`. Use the `reclass_plugin_create!` macro.
   
 Alternatively, a bundle library exporting multiple plugins uses:
 
-- **`reclass_plugin_create_all`** — Returns a `Vec<Box<dyn HostPlugin>>`. Use [`reclass_plugin_create_all!`](https://docs.rs/reclass/latest/reclass/macro.reclass_plugin_create_all.html).
+- **`reclass_plugin_create_all`** — Returns a `Vec<Box<dyn HostPlugin>>`. Use `reclass_plugin_create_all!`.
 
 Both also emit the **`reclass_plugin_abi`** symbol automatically (a `*const c_char` carrying the fingerprint).
 
@@ -119,7 +123,7 @@ For each plugin, the host stores:
 - `window_open` — whether its window is open
 - `config` — an opaque blob from `save_settings()`
 
-When a plugin loads, the host calls `load_settings()` with its saved blob. Implement it using [`load_json`](https://docs.rs/reclass/latest/reclass/fn.load_json.html) for common cases:
+When a plugin loads, the host calls `load_settings()` with its saved blob. Implement it using the `load_json` helper for common cases:
 
 ```rust
 use reclass::plugin::*;
@@ -291,6 +295,23 @@ The host drains the queue each tick and applies actions in the mutation phase.
 - Ensure `has_window()` returns `true`.
 - Verify the window opens in *View → Plugins* (check the checkbox).
 - If the window renders but is empty, check `show_window()` is pushing UI to the context.
+
+## Bundled plugins
+
+All eight ship in one cdylib (`libreclass_official_plugins.so`), built from
+[`crates/official-plugins`](../crates/official-plugins/) and included in the
+release tarball:
+
+| Plugin | What it does |
+|---|---|
+| Pointer Summary | For every `ClassPtr` row, which class it targets and whether it moved since the last tick |
+| Sentinel Watch | Flags fields whose value must never change — magic-number / integrity detection |
+| Structure Diff | Freezes a baseline snapshot and diffs every later one against it |
+| Hex Dump | Raw hex viewer for an arbitrary address, read through the live backend |
+| Copy As | Context-menu entries to copy a field's declaration as C, Rust, Python, or JSON |
+| Cheat Table Exporter | Writes the current scalar rows out as a Cheat Engine `.CT` file |
+| Auto-attach | Polls `/proc` for a process by name and attaches when it appears |
+| Scheduled Sampler | Saves a timestamped project snapshot every N ticks |
 
 ## Real Examples
 

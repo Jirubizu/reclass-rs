@@ -49,11 +49,8 @@ cd reclass-rs && cargo build --release
 ## Run
 
 ```sh
-# desktop (egui) UI — attach by pid and point at an address on launch
+# attach by pid and point at an address on launch
 cargo run --release -p reclass -- --pid 1234 --addr 0x5A3518
-
-# terminal (ratatui) UI
-cargo run --release -p reclass -- --tui --pid 1234
 ```
 
 | Flag | Meaning |
@@ -61,7 +58,6 @@ cargo run --release -p reclass -- --tui --pid 1234
 | `--pid <N>` | attach to pid N |
 | `--addr <expr>` | seed the starter class's address bar (e.g. `0x5A3518` or `"[<game>+0x10]"`) |
 | `--project <ron>` | load a saved project at launch (classes + expressions) |
-| `--tui` | use the terminal front-end |
 
 ## First session: the playground
 

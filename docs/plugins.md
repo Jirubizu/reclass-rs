@@ -19,7 +19,7 @@ The host scans two directories, in this order:
 1. `$XDG_CONFIG_HOME/reclass-rs/plugins/`, or `$HOME/.config/reclass-rs/plugins/` when `$XDG_CONFIG_HOME` is unset (`./.reclass-rs/plugins/` when neither is set)
 2. `plugins/` next to the binary (what the release tarball ships)
 
-Both are scanned — the config directory first — and a missing one is skipped silently. Plugins are discovered by file extension (`.so`, `.dylib`, `.dll`). Loading happens in GUI builds only; a `--tui`-only build has no plugin host.
+Both are scanned — the config directory first — and a missing one is skipped silently. Plugins are discovered by file extension (`.so`, `.dylib`, `.dll`). Loading happens in `gui` builds only; a build without that feature has no plugin host.
 
 ## Lifecycle Hooks
 
@@ -192,7 +192,7 @@ serde = { version = "1.0", features = ["derive"] }
 
 Key requirements:
 - **`crate-type = ["cdylib"]`** — produces a native library, not an rlib.
-- **`path` dependency on `reclass`** with the `gui` feature — this is what makes the ABI fingerprint match. `reclass` is not published on crates.io, and even if it were, a registry copy would be a different `reclass` build than the binary you are loading into, which the fingerprint check rejects. `default-features = false` keeps the `tui` front-end and its dependencies out of the plugin.
+- **`path` dependency on `reclass`** with the `gui` feature — this is what makes the ABI fingerprint match. `reclass` is not published on crates.io, and even if it were, a registry copy would be a different `reclass` build than the binary you are loading into, which the fingerprint check rejects.
 
 Build with `cargo build --release`. The result is `target/release/libmy_reclass_plugin.so` (Linux).
 

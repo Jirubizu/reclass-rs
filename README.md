@@ -34,7 +34,7 @@ API reference: `cargo doc --workspace --all-features --no-deps --open`.
 - **Full ReClass-style node set** — hex, signed/unsigned ints, floats, `Bool`, `Vec2/3/4`, `Text`/`WText` (followed and shown inline), `Pointer`, `FunctionPtr`, `Array[N]`, inline `ClassInstance`, `ClassPtr`, `Padding`, `Unknown`, `Enum` with a named-variant table, and `Bits8/16/32/64` binary views. [Details](docs/user-guide.md#node-types).
 - **32-bit targets** — pointer width is a property of the project: reads, edits, offsets, and codegen all narrow. [Details](docs/user-guide.md#32-bit-targets).
 - **Address expressions** — `<module.so> + 0x10`, `[0xADDR]`, `[<module> + 0x10] + 0x20`, with `+ - * /`.
-- **Two front-ends over one core** — an egui desktop UI (default) with a virtualized table, collapsible pointers/arrays/instances, multi-select, inline editing and value-change flashing; and a ratatui terminal UI (`--tui`).
+- **egui desktop UI** — a virtualized table (smooth with thousands of fields) with collapsible pointers/arrays/instances, multi-select, inline editing, and value-change flashing, over an egui-independent core.
 - **Undo/redo, copy/paste** over every structural edit — including edits made by plugins and MCP agents, which mutate the same state. [Details](docs/user-guide.md#undo-copy-and-paste).
 - **Find and Go to** — filter by name/type/value/comment/address, or jump to the field *containing* an address. [Details](docs/user-guide.md#find-and-go-to).
 - **Pointer scanner** — given an address, find the `<module>+0xBASE -> +0xOFF -> …` chains that reach it, shortest first. [Details](docs/user-guide.md#pointer-scanner).
@@ -58,7 +58,6 @@ tar xzf reclass-linux-x86_64.tar.gz && ./reclass
 
 # from source
 cargo run --release -p reclass -- --pid 1234 --addr 0x5A3518
-cargo run --release -p reclass -- --tui --pid 1234
 ```
 
 Reading another process needs ptrace permission — for development,

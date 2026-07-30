@@ -6,7 +6,7 @@ required.
 
 ```mermaid
 flowchart LR
-    UI["UI<br/>egui + ratatui"] <--> CORE["core<br/>nodes · classes · expr · engine"]
+    UI["UI<br/>egui"] <--> CORE["core<br/>nodes · classes · expr · engine"]
     CORE <--> BE["MemoryBackend (trait)"]
     BE --- VMEM["backend-vmem<br/>(over vmem)"]
     BE --- MOCK["MockBackend<br/>(tests / benches)"]
@@ -50,7 +50,7 @@ reclass-rs/
   crates/
     core/              # reclass-core — no UI, no vmem dep; nodes, classes, expr, engine, codegen, project
     backend-vmem/      # reclass-backend-vmem — MemoryBackend over the `vmem` crate (+ smoke CLI, access tracker)
-    app/               # reclass — egui (default) + ratatui (--tui) front-ends, MCP server, plugin host
+    app/               # reclass — egui front-end, MCP server, plugin host
     official-plugins/  # reclass-official-plugins — the bundled plugins, one cdylib
     example-plugin/    # reclass-example-plugin — reference plugin, the API by example
   examples/playground/ # C target + guided tour
@@ -65,7 +65,7 @@ reclass-rs/
 | [`node`](../crates/core/src/node.rs) | `NodeKind` — every field type, its size, formatting, and edit parsing |
 | [`class`](../crates/core/src/class.rs) | `ClassRegistry`, derived offsets, cycle rejection, reference rewriting, `PtrWidth` |
 | [`expr`](../crates/core/src/expr.rs) | address-expression parser and resolver |
-| [`engine`](../crates/core/src/engine.rs) | the batched read loop; produces the `Row` list the UIs render |
+| [`engine`](../crates/core/src/engine.rs) | the batched read loop; produces the `Row` list the UI renders |
 | [`codegen`](../crates/core/src/codegen/) | C / C++ / Rust emission |
 | [`project`](../crates/core/src/project.rs) | RON save/load |
 | [`rcnet`](../crates/core/src/rcnet/) | ReClass.NET `.rcnet` import/export (feature-gated) |
@@ -74,10 +74,10 @@ reclass-rs/
 ### `reclass` (app) modules
 
 `app_state` is the egui-independent application core — attach, resolve
-expressions, drive the engine, apply edits — and it is what both front-ends,
-the plugin host, and the MCP server mutate. Everything else is a view over it:
-`gui/` (egui), `tui` (ratatui), `mcp` (JSON-RPC server), `plugin` (the `dlopen`
-host), `updater` (self-update).
+expressions, drive the engine, apply edits — and it is what the front-end, the
+plugin host, and the MCP server mutate. Everything else is a view over it:
+`gui/` (egui), `mcp` (JSON-RPC server), `plugin` (the `dlopen` host), `updater`
+(self-update).
 
 That single mutation path is why undo covers plugin and agent edits for free.
 
@@ -89,7 +89,6 @@ That single mutation path is why undo covers plugin and agent edits for free.
 | `reclass-core` | `serde` | ✅ | RON project save/load |
 | `reclass-core` | `rcnet` | ❌ | ReClass.NET `.rcnet` import/export (pulls `flate2`); the app enables it |
 | `reclass` (app) | `gui` | ✅ | egui desktop front-end |
-| `reclass` (app) | `tui` | ✅ | ratatui terminal front-end |
 | `reclass-backend-vmem` | `access-tracker` | ❌ | ptrace hardware-breakpoint access tracker |
 
 ```sh

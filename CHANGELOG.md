@@ -10,6 +10,15 @@ in a newer one, with new fields taking their defaults.
 
 ## Unreleased
 
+### Removed
+
+- **The ratatui terminal front-end (`--tui`).** It was a second view over
+  `AppState` that had to be kept in step with the egui one for every model
+  change, while never reaching parity — no find/go-to, pointer scan, plugins, or
+  MCP. `reclass` now builds one front-end; the `tui` feature and the `ratatui` /
+  `crossterm` dependencies are gone. The last version with it is on the `tui`
+  branch.
+
 ### Changed
 
 - **Documentation split out of the README** into [`docs/`](docs/README.md):

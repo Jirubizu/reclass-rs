@@ -18,7 +18,6 @@ in detail. For a first, hands-on walkthrough use the
 - [Projects](#projects)
 - [Code generation](#code-generation)
 - [Settings](#settings)
-- [Terminal front-end](#terminal-front-end)
 - [Access tracker](#access-tracker)
 
 ## The basic loop
@@ -148,8 +147,6 @@ scrolls to the field that *contains* it, not just an exact row match. With a
 filter active it resolves against the filtered rows, so it never jumps to
 something hidden.
 
-egui front-end only — the `--tui` front-end does not have it.
-
 ## Pointer scanner
 
 *View → Pointer scan*: given an address you found once, finds the
@@ -205,15 +202,6 @@ there is a test that asserts it.
 | Kernel backend | use `/dev/vmem` instead of `process_vm_readv`; ticking it without the module loaded says so and reverts |
 | MCP control server | enable + port — see [MCP server](mcp.md) |
 | Plugins | per-plugin enabled flag, window state, and each plugin's own configuration — see [Plugin authoring](plugins.md#settings-persistence) |
-
-## Terminal front-end
-
-`--tui` runs a ratatui UI over the same core. Keys: `q` quit · `↑/↓` move ·
-`←/→` switch class tab · `space` expand/collapse a `ClassPtr` · `e` edit the
-selected value · `a` edit the address expression · `m` toggle the memory map ·
-`r` refresh regions.
-
-It is deliberately a subset: no find/go-to, pointer scan, plugins, or MCP.
 
 ## Access tracker
 

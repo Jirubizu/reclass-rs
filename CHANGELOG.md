@@ -8,7 +8,7 @@ Versions follow semver against the `reclass-core` public API. The `.ron`
 project format is forward-compatible: a file written by an older version loads
 in a newer one, with new fields taking their defaults.
 
-## Unreleased
+## 0.7.0
 
 ### Removed
 

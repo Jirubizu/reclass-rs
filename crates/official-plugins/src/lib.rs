@@ -1,7 +1,8 @@
 //! Bundled first-party reclass-rs plugins, shipped as a single dynamic library.
 //!
-//! Each module is a self-contained [`HostPlugin`] implementation registered via
-//! [`reclass_plugin_create_all!`].
+//! Each module is a self-contained [`HostPlugin`](reclass::plugin::HostPlugin)
+//! implementation registered via
+//! [`reclass_plugin_create_all!`](macro@reclass::reclass_plugin_create_all).
 #![deny(rust_2018_idioms)]
 
 mod auto_attach;

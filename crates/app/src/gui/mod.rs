@@ -1,11 +1,11 @@
 //! egui front-end (Phases 4–7). All model logic lives in [`AppState`]; this is
 //! the immediate-mode view + deferred-action dispatch over it.
 //!
-//! The view is split across sibling modules: [`panels`] (menu bar, side panel,
-//! modal windows), [`table`] (the central node table), [`widgets`] (leaf label
-//! helpers + node-kind palettes), [`flash`] (value-change highlighting) and
-//! [`settings`] (persisted config). This module owns the app state, the
-//! [`Action`] dispatch, and the `eframe` glue.
+//! The view is split across sibling modules: `panels` (menu bar, side panel,
+//! modal windows), `table` (the central node table), `widgets` (leaf label
+//! helpers + node-kind palettes), `flash` (value-change highlighting) and
+//! `settings` (persisted config). This module owns the app state, the
+//! `Action` dispatch, and the `eframe` glue.
 
 use std::time::Duration;
 

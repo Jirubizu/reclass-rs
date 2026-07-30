@@ -1,6 +1,7 @@
 //! Project save/load (Phase 8).
 //!
-//! A [`Project`] bundles the [`ClassRegistry`] (classes + per-class address
+//! A [`Project`] bundles the [`ClassRegistry`](crate::class::ClassRegistry)
+//! (classes + per-class address
 //! expressions) with view and window state, and round-trips losslessly through
 //! RON. Available only with the `serde` feature.
 

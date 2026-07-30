@@ -6,6 +6,7 @@
 //! testable with the in-memory [`MockBackend`] — no live process required.
 #![forbid(unsafe_code)]
 #![deny(rust_2018_idioms)]
+#![warn(missing_docs)]
 
 pub mod backend;
 pub mod class;

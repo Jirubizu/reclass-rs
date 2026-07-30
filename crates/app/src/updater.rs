@@ -55,7 +55,7 @@ pub struct Release {
     pub version: Version,
     /// Release body — the generated changelog.
     pub notes: String,
-    /// Direct download URL of the [`ASSET`] tarball, when the release ships
+    /// Direct download URL of the release tarball, when the release ships
     /// one. Older releases predate the packaged build and can only be
     /// installed by hand.
     pub asset_url: Option<String>,

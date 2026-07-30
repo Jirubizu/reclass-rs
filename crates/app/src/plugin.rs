@@ -4,7 +4,7 @@
 //!
 //! Plugins are native dynamic libraries dropped into `plugins/` next to the
 //! binary. Each exports one C-ABI entry point, [`CREATE_SYMBOL`], produced by
-//! the [`reclass_plugin_create!`] macro, returning a boxed [`HostPlugin`]
+//! the [`reclass_plugin_create!`](macro@crate::reclass_plugin_create) macro, returning a boxed [`HostPlugin`]
 //! trait object.
 //!
 //! Rust has **no stable ABI**. Everything flowing across the library boundary
@@ -74,7 +74,7 @@ pub use reclass_core::{
     Perms, Region, Row,
 };
 
-/// The C-ABI symbol every plugin exports (see [`reclass_plugin_create!`]).
+/// The C-ABI symbol every plugin exports (see [`reclass_plugin_create!`](macro@crate::reclass_plugin_create)).
 pub const CREATE_SYMBOL: &[u8] = b"reclass_plugin_create";
 
 /// Signature of the plugin entry point. Returns a freshly boxed trait object
@@ -87,7 +87,7 @@ pub const CREATE_SYMBOL: &[u8] = b"reclass_plugin_create";
 pub type CreateFn = unsafe extern "C" fn() -> *mut Box<dyn HostPlugin>;
 
 /// The optional C-ABI symbol a *bundle* library exports to register many
-/// plugins from one file (see [`reclass_plugin_create_all!`]). The loader tries
+/// plugins from one file (see [`reclass_plugin_create_all!`](macro@crate::reclass_plugin_create_all)). The loader tries
 /// this before [`CREATE_SYMBOL`].
 pub const CREATE_ALL_SYMBOL: &[u8] = b"reclass_plugin_create_all";
 
@@ -97,7 +97,8 @@ pub const CREATE_ALL_SYMBOL: &[u8] = b"reclass_plugin_create_all";
 pub type CreateAllFn = unsafe extern "C" fn() -> *mut Vec<Box<dyn HostPlugin>>;
 
 /// The C-ABI symbol carrying a plugin's toolchain fingerprint, emitted by
-/// [`reclass_plugin_create!`] / [`reclass_plugin_create_all!`]. The loader
+/// [`reclass_plugin_create!`](macro@crate::reclass_plugin_create) /
+/// [`reclass_plugin_create_all!`](macro@crate::reclass_plugin_create_all). The loader
 /// reads it *before* touching any other symbol.
 pub const ABI_SYMBOL: &[u8] = b"reclass_plugin_abi";
 
@@ -883,7 +884,7 @@ macro_rules! reclass_plugin_create {
 
 /// Generate the bundle entry point registering many plugin types from one
 /// library. Each type must implement [`HostPlugin`] and [`Default`]. Use this
-/// instead of [`reclass_plugin_create!`] when a library ships several plugins.
+/// instead of [`reclass_plugin_create!`](macro@crate::reclass_plugin_create) when a library ships several plugins.
 #[macro_export]
 macro_rules! reclass_plugin_create_all {
     ($($ty:ty),+ $(,)?) => {

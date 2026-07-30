@@ -8,6 +8,22 @@ Versions follow semver against the `reclass-core` public API. The `.ron`
 project format is forward-compatible: a file written by an older version loads
 in a newer one, with new fields taking their defaults.
 
+## Unreleased
+
+### Changed
+
+- **Documentation split out of the README** into [`docs/`](docs/README.md):
+  getting started, user guide, MCP server, plugin authoring, architecture, and
+  development. The README is now an overview plus an index; nothing was dropped.
+- `reclass-core` sets `#![warn(missing_docs)]`, so all three library surfaces do.
+
+### Fixed
+
+- Ten broken or private rustdoc intra-doc links (`reclass_plugin_create!`,
+  `ClassRegistry`, the private `gui` submodules, the `smoke` usage block).
+  CI now runs `cargo doc --workspace --all-features` with `-D warnings`, so a
+  broken link fails the build instead of silently shipping.
+
 ## 0.6.1
 
 ### Fixed

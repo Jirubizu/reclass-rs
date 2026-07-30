@@ -68,6 +68,14 @@ jobs:
           sudo sysctl -w kernel.yama.ptrace_scope=0 || true
           cargo nextest run --workspace --all-features
 
+      # The library crates all `#![warn(missing_docs)]`; this turns broken
+      # intra-doc links and undocumented public items into build failures, so
+      # the API reference can't rot silently.
+      - name: rustdoc (all features, deny warnings)
+        run: cargo doc --workspace --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
       # Every registered bench, not just `engine`: a bench that stops compiling
       # is a broken test nobody runs until they need it.
       - name: bench compile-check

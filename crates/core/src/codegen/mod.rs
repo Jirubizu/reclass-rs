@@ -6,8 +6,8 @@
 //! generated `size_of` / field offsets exactly match the model. Each field
 //! carries its offset as a comment.
 //!
-//! Split by target: [`rust`] (plain `#[repr(C, packed)]` structs), [`c`] (C/C++
-//! with forward declarations), and [`project`] (a standalone `vmem`-backed Cargo
+//! Split by target: `rust` (plain `#[repr(C, packed)]` structs), `c` (C/C++
+//! with forward declarations), and `project` (a standalone `vmem`-backed Cargo
 //! project). This module owns the [`Language`] dispatch and the naming/ordering
 //! helpers shared across all three.
 

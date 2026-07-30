@@ -2,9 +2,12 @@
 //! `MemoryBackend` trait, proving the `vmem` backend is wired up.
 //!
 //! Usage:
-//!   smoke <pid|name> <hex-addr> [len]
-//!   smoke <pid|name> --maps          # list mapped regions
-//!   smoke <pid|name> --modules <name>  # print a module base
+//!
+//! ```text
+//! smoke <pid|name> <hex-addr> [len]
+//! smoke <pid|name> --maps            # list mapped regions
+//! smoke <pid|name> --modules <name>  # print a module base
+//! ```
 
 use reclass_backend_vmem::VmemBackend;
 use reclass_core::{MemoryBackend, ScatterReq};

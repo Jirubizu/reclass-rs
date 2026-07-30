@@ -18,6 +18,11 @@ in a newer one, with new fields taking their defaults.
   MCP. `reclass` now builds one front-end; the `tui` feature and the `ratatui` /
   `crossterm` dependencies are gone. The last version with it is on the `tui`
   branch.
+- **The `gui` feature.** With the TUI gone it gated the only front-end: a
+  `--no-default-features` build compiled a binary that refused to start. `eframe`,
+  `egui`, `libloading` and `parking_lot` are now unconditional dependencies, and
+  a plugin's `Cargo.toml` is one line shorter — `reclass = { path = "..." }`,
+  with no `default-features = false, features = ["gui"]` incantation.
 
 ### Changed
 

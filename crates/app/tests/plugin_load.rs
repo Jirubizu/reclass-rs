@@ -2,7 +2,6 @@
 //! cdylib, `dlopen` it through `PluginManager`, and drive its hooks across the
 //! library boundary. Proves the C-ABI entry point + same-toolchain contract
 //! actually round-trips a `dyn HostPlugin`.
-#![cfg(feature = "gui")]
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

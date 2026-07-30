@@ -131,4 +131,4 @@ See [`docs/plugins.md`](../../docs/plugins.md) for:
 
 ## Build Contract
 
-This crate depends on `reclass` by path with the `gui` feature. **The plugin MUST be built with the same `rustc` and dependencies as the `reclass` binary it will load into.** This is enforced by the ABI fingerprint check at load time. If you update your Rust toolchain, rebuild both the host and this plugin.
+This crate depends on `reclass` by path. **The plugin MUST be built with the same `rustc` and dependencies as the `reclass` binary it will load into.** This is enforced by the ABI fingerprint check at load time. If you update your Rust toolchain, rebuild both the host and this plugin.

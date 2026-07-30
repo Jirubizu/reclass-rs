@@ -42,7 +42,7 @@
 //!
 //! ## Authoring a plugin
 //!
-//! Depend on `reclass` (this crate, `gui` feature) and:
+//! Depend on `reclass` (this crate) and:
 //!
 //! ```ignore
 //! use reclass::plugin::*;

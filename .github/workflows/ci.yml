@@ -29,8 +29,8 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      # `--all-features` pulls in the `gui` feature, so eframe's X11/GTK
-      # headers must be present even though nothing is rendered here.
+      # The app depends on eframe unconditionally, so its X11/GTK headers must
+      # be present even though nothing is rendered here.
       - name: Install system deps (eframe)
         run: |
           sudo apt-get update

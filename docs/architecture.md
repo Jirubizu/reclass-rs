@@ -88,7 +88,6 @@ That single mutation path is why undo covers plugin and agent edits for free.
 | `reclass-core` | `mock` | ✅ | in-memory `MockBackend` (tests, benches, offline) |
 | `reclass-core` | `serde` | ✅ | RON project save/load |
 | `reclass-core` | `rcnet` | ❌ | ReClass.NET `.rcnet` import/export (pulls `flate2`); the app enables it |
-| `reclass` (app) | `gui` | ✅ | egui desktop front-end |
 | `reclass-backend-vmem` | `access-tracker` | ❌ | ptrace hardware-breakpoint access tracker |
 
 ```sh

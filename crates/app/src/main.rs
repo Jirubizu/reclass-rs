@@ -1,7 +1,6 @@
 //! `reclass` binary entry point: parse a handful of flags and hand off to the
 //! egui front-end, which owns `app_state::AppState`.
 
-#[cfg(feature = "gui")]
 use reclass::gui;
 
 fn main() -> anyhow::Result<()> {
@@ -13,7 +12,7 @@ fn main() -> anyhow::Result<()> {
     let pid = parse_pid(&args);
     let addr = parse_opt(&args, "--addr");
     let project = parse_opt(&args, "--project");
-    run_frontend(pid, addr, project)
+    gui::run(pid, addr, project)
 }
 
 fn parse_pid(args: &[String]) -> Option<i32> {
@@ -32,22 +31,4 @@ fn parse_opt(args: &[String], flag: &str) -> Option<String> {
         }
     }
     None
-}
-
-#[cfg(feature = "gui")]
-fn run_frontend(
-    pid: Option<i32>,
-    addr: Option<String>,
-    project: Option<String>,
-) -> anyhow::Result<()> {
-    gui::run(pid, addr, project)
-}
-
-#[cfg(not(feature = "gui"))]
-fn run_frontend(
-    _pid: Option<i32>,
-    _addr: Option<String>,
-    _project: Option<String>,
-) -> anyhow::Result<()> {
-    anyhow::bail!("reclass was built without a frontend (enable the `gui` feature)")
 }

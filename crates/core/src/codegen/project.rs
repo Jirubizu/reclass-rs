@@ -45,7 +45,7 @@ fn cargo_toml(name: &str) -> String {
          version = \"0.1.0\"\n\
          edition = \"2021\"\n\n\
          [dependencies]\n\
-         vmem = {{ git = \"https://github.com/Jirubizu/vmem.git\" }}\n"
+         vmem = {{ git = \"https://github.com/Jirubizu/vmem.git\", tag = \"v0.1.13\" }}\n"
     )
 }
 

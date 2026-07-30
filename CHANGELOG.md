@@ -8,6 +8,21 @@ Versions follow semver against the `reclass-core` public API. The `.ron`
 project format is forward-compatible: a file written by an older version loads
 in a newer one, with new fields taking their defaults.
 
+## 0.7.1
+
+### Changed
+
+- **`vmem` bumped to `v0.1.13`** (was the unreleased rev `29c5cf94`), and the
+  dependency is now pinned to a tag instead of a raw revision. Upstream split
+  its monolithic `lib.rs` into modules, added an optional `static` feature
+  (offline ELF/AOB inspection, which we do not enable), hardened the
+  `write_force` fallback and ptrace stepping, and grew three `Error` variants.
+  No API we use changed; the new variants fall through to
+  `MemError::Backend` as before.
+- Generated projects (**Project generator**) pin `vmem` to `tag = "v0.1.13"`
+  rather than tracking the default branch, so a generated `Cargo.toml` keeps
+  building when upstream moves.
+
 ## 0.7.0
 
 ### Removed

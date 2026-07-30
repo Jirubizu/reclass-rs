@@ -79,3 +79,6 @@ in a newer one, with new fields taking their defaults.
   result is discarded.
 - `.rcnet` conversion is verified against hand-built fixtures matching the
   documented format, not against a file from a real ReClass.NET install.
+- The address-bar `[…]` deref always reads 8 bytes, so on a 32-bit target it
+  resolves correctly only when the 4 bytes after the pointer are zero. Pointer
+  *fields* do honour the project's width.

@@ -19,6 +19,7 @@ You define a *class* as an ordered list of typed *fields*; reclass-rs resolves a
   - **`Bits8/16/32/64`** — an integer displayed as MSB-first binary octets (`00000001 00000010`). Edits accept binary, `0x` hex, or decimal; bare digits are binary, so retyping what is on screen means the same value.
   - **`Text*`/`WText*`** — a `char*` / `char16_t*`. The engine follows it and shows the string inline (`0x2000 -> "Player One"`), batching every followed string in the tick into one extra scatter. `max` bounds the read so a garbage pointer cannot request a huge one.
 - **32-bit targets.** *View → Target pointer width* switches the project between 32- and 64-bit pointers. It is a property of the target, not the app: every `Pointer`/`ClassPtr`/`FunctionPtr`/`Text*` narrows to 4 bytes and every offset after one shifts. The engine reads pointers at that width, edits write at that width (an address that does not fit is rejected rather than truncated), and codegen emits a fixed-width integer instead of a host-width `void*`/`*mut T`, so the generated struct's offsets still match the live layout. Persisted with the project; a project written before this existed loads as 64-bit.
+  - **Known gap:** the address bar's `[…]` deref always reads 8 bytes, so on a 32-bit target it only resolves correctly when the 4 bytes following the pointer happen to be zero. Type the pointer as a `Pointer`/`ClassPtr` field and expand it instead — those do honour the width.
 - **Derived offsets** that recompute and re-cache on every structural edit; inline `ClassInstance` cycles are detected and rejected (`ClassPtr` cycles are fine — they're a read boundary).
 - **Address expressions:** `<module.so> + 0x10`, `[0xADDR]`, `[<module> + 0x10] + 0x20`, with `+ - * /`.
 - **egui desktop UI** (default) and a **ratatui terminal UI** (`--tui`) over the same core:
@@ -36,7 +37,7 @@ You define a *class* as an ordered list of typed *fields*; reclass-rs resolves a
 - **Pointer scanner** (*View → Pointer scan*): given an address you found once, finds the `<module>+0xBASE -> +0xOFF -> …` chains that lead to it, shortest first, and pastes the winner straight into a class's address bar. Chains terminate only on file-backed mappings — a pointer that lives on the anonymous heap moves every run and is not a static path. Runs on a worker thread that re-attaches by pid (`MemoryBackend` is not `Send`), because it is not fast: `crates/core/benches/scan.rs` measures ~66 ms over 1 MiB of pointer-dense heap at depth 4 and ~660 ms at depth 8 — each extra hop multiplies the search, not the memory pass. Verified end to end against a live process by `crates/backend-vmem/tests/live_scan.rs`.
 - **ReClass.NET interop** (*File → Import / Export ReClass.NET (.rcnet)*): reads and writes the real format — a ZIP holding `Data.xml` — so the existing corpus of community structs is usable here. The platform tag sets pointer width, the project-level enum table is inlined onto the fields that use it, and class references resolve by GUID regardless of declaration order. **The mapping is not lossless and says so:** a union becomes raw bytes of the same size, a vtable becomes that many function pointers, UTF-32 text becomes a raw block. Every approximation is listed in a conversion-notes window rather than applied silently. Import is undoable, so a mis-aimed one is a single `Ctrl+Z`.
 - **Process picker**, **memory-map view**, and **project save/load** (RON) that remembers the attached process name and **auto-attaches** on load.
-- **Settings** window (*View → Settings*) persisted to `~/.config/reclass-rs/settings.ron`: value-change highlight color + fade + on/off, the default field type (e.g. `Hex64` → `Int64`) and seed-row count for new classes, the max array elements rendered, the **MCP control server** toggle + port (see [MCP server](#mcp-server)), and **per-plugin state** — enabled, window, and each plugin's own configuration (see [Plugins](#plugins)).
+- **Settings** window (*View → Settings*) persisted to `~/.config/reclass-rs/settings.ron`: value-change highlight color + fade + on/off, the default field type (e.g. `Hex64` → `Int64`) and seed-row count for new classes, the max array elements rendered, the **kernel backend** toggle (`/dev/vmem` instead of `process_vm_readv`; ticking it without the module loaded says so and reverts), the **MCP control server** toggle + port (see [MCP server](#mcp-server)), and **per-plugin state** — enabled, window, and each plugin's own configuration (see [Plugins](#plugins)).
 - **Code generation** to C, C++, and Rust (`#[repr(C, packed)]`), with offsets as comments — generated Rust's `size_of`/`offset_of` match the model (verified by a test).
 - **In-app updates** (*View → Check for updates…*): compares this build against the newest GitHub release, shows its changelog, and — one button — downloads the release tarball and swaps in the new binary plus its matching plugin bundle. Takes effect on restart. Uses `curl` and `tar`; if the install directory is not writable it says so instead of half-updating.
 - **Optional ptrace access tracker** (`access-tracker` feature): "what instruction wrote/accessed this address" via x86-64 hardware breakpoints.
@@ -234,12 +235,12 @@ With both connected, the agent can read a structure in IDA and reproduce it here
 | Area | Tools |
 |---|---|
 | Classes | `list_classes`, `get_class`, `create_class`, `remove_class`, `rename_class`, `set_address_expr` |
-| Fields | `add_node`, `insert_node`, `remove_node`, `set_node_kind`, `set_node_name`, `set_node_comment`, `set_array_count`, `add_bytes` |
+| Fields | `add_node`, `insert_node`, `remove_node`, `set_node_kind`, `set_node_name`, `set_node_comment`, `set_array_count`, `add_bytes`, `copy_nodes`, `paste_nodes` |
 | Memory | `read_memory`, `write_memory`, `list_regions`, `get_rows` |
-| Target | `list_processes`, `attach_pid` |
-| Project | `codegen`, `save_project`, `load_project` |
+| Target | `list_processes`, `attach_pid`, `set_pointer_width` |
+| Project | `codegen`, `save_project`, `load_project`, `import_rcnet`, `export_rcnet`, `undo`, `redo` |
 
-A field type (`kind`) is a **shorthand string** — `u8`/`u16`/`u32`/`u64`, `i8`…`i64`, `f32`, `f64`, `bool`, `ptr`, `fnptr`, `hex8`…`hex64`, `vec2`/`vec3`/`vec4` — **or** a full NodeKind JSON object for complex types, e.g. `{"Array":{"element":{"Hex":"W64"},"count":8}}`, `{"ClassPtr":{"class_id":3}}`, `{"Text":{"encoding":"Utf8","len":32}}`. Addresses accept a number or a `0x…` string. Read-only resources mirror the read tools: `reclass://classes`, `reclass://regions`, `reclass://rows`, `reclass://codegen/rust`, `reclass://codegen/cpp`.
+A field type (`kind`) is a **shorthand string** — `u8`/`u16`/`u32`/`u64`, `i8`…`i64`, `f32`, `f64`, `bool`, `ptr`, `fnptr`, `hex8`…`hex64`, `vec2`/`vec3`/`vec4`, `bits8`…`bits64`, `enum8`…`enum64` (empty variant table), `cstr`/`wcstr` — **or** a full NodeKind JSON object for complex types, e.g. `{"Array":{"element":{"Hex":"W64"},"count":8}}`, `{"ClassPtr":{"class_id":3}}`, `{"ClassInstance":{"class_id":3}}`, `{"Text":{"encoding":"Utf8","len":32}}`, `{"Padding":16}`. Addresses accept a number or a `0x…` string. Read-only resources mirror the read tools: `reclass://classes`, `reclass://regions`, `reclass://rows`, `reclass://codegen/rust`, `reclass://codegen/cpp`.
 
 > ⚠️ The MCP tools **read and write arbitrary target memory** and can attach to processes. Keep the server on loopback, only enable it while an agent is driving reclass-rs, and treat any connected client as fully trusted.
 
@@ -351,6 +352,7 @@ fn load_settings(&mut self, data: &str) -> bool { load_json(self, data) }
 |---|---|---|---|
 | `reclass-core` | `mock` | ✅ | in-memory `MockBackend` (tests, benches, offline) |
 | `reclass-core` | `serde` | ✅ | RON project save/load |
+| `reclass-core` | `rcnet` | ❌ | ReClass.NET `.rcnet` import/export (pulls `flate2`); the app enables it |
 | `reclass` (app) | `gui` | ✅ | egui desktop front-end |
 | `reclass` (app) | `tui` | ✅ | ratatui terminal front-end |
 | `reclass-backend-vmem` | `access-tracker` | ❌ | ptrace hardware-breakpoint access tracker |
@@ -364,11 +366,12 @@ cargo build -p reclass-backend-vmem --features access-tracker   # enable the acc
 ## Testing & benchmarks
 
 ```sh
-cargo test --workspace --all-features      # full suite (incl. live read against a spawned child)
-cargo bench -p reclass-core --bench engine # render-loop benchmarks (criterion)
+cargo nextest run --workspace --all-features  # full suite, as CI runs it (incl. live read against a spawned child)
+cargo test --workspace --all-features         # same suite without nextest installed
+cargo bench -p reclass-core --all-features    # engine, history (undo snapshots), scan (pointer scanner)
 ```
 
-The benches prove the engine batches reads — a flat 256-byte / 64-field class costs **one** scatter call per tick; a depth-4 pointer chain costs four (one per level). The live-memory tests spawn a helper child and self-skip if `ptrace` is denied.
+The `engine` benches prove the engine batches reads — a flat 256-byte / 64-field class costs **one** scatter call per tick; a depth-4 pointer chain costs four (one per level). `history` measures an undo snapshot of a large project (~1.7 MB) and `scan` the pointer scanner's cost per depth. The live-memory tests spawn a helper child and self-skip if `ptrace` is denied.
 
 ---
 
@@ -378,7 +381,7 @@ The benches prove the engine batches reads — a flat 256-byte / 64-field class 
 - `unsafe` lives in exactly three places, each `// SAFETY`-noted: the `backend-vmem` access tracker (ptrace), `select_backend` (one `set_var` before any thread starts), and the plugin loader (`dlopen` plus the C-ABI entry points).
 - Errors: `thiserror` in libraries, `anyhow` only in the app.
 - `cargo fmt --all --check` and `cargo clippy --all-targets --all-features -- -D warnings` are clean; every `core` module ships unit tests.
-- CI (`.github/workflows/ci.yml`) runs fmt + clippy + test + bench-compile on every push, and a tagged push additionally builds the release artifacts — gated on that job passing.
+- CI (`.github/workflows/ci.yml`) runs fmt + clippy + `cargo nextest run` + bench-compile on every push, and a tagged push additionally builds the release artifacts — gated on that job passing.
 
 ---
 

@@ -133,6 +133,8 @@ Configurable bits, persisted to `~/.config/reclass-rs/settings.ron`:
 - **Value-change highlight** — enable/disable, colour, and fade duration.
 - **Default field type** — what fresh classes seed with (e.g. `Hex64` → `Int64`).
 - **Seed rows / Max array elements** — table seeding and the array render cap.
+- **Kernel backend** — read through `/dev/vmem` instead of `process_vm_readv`; needs the vmem module loaded.
+- **MCP control server** — loopback JSON-RPC endpoint for an AI agent, off by default.
 
 ---
 
@@ -155,6 +157,12 @@ The target's `/proc/<pid>/maps`. Notice `&g_player` (`0x404080`) lands in the
 - **Hide the left panel**: *View → Classes panel* for a memory-only view.
 - **Save your work**: *File → Save as…*; it remembers the process name and
   re-attaches on load (*File → Open recent*).
+- **Undo a mistake**: retype a field, then `Ctrl+Z` / `Ctrl+Shift+Z`. Multi-select
+  delete undoes as one step.
+- **Find a field**: `Ctrl+F` filters by name, type, value, comment, or a rendered
+  `0x` offset; **Go to** an address scrolls to the field containing it.
+- **Pointer scan**: *View → Pointer scan* on `&g_weapon` (`0x404060`) finds the
+  `<playground>+0x…` chain that reaches it and writes it into the address bar.
 
 ---
 

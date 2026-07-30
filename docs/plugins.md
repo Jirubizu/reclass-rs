@@ -10,13 +10,12 @@ The loader enforces this at load time by comparing a `reclass_plugin_abi` symbol
 
 ## Plugin Discovery
 
-The host searches for plugins in this order, stopping at the first readable directory:
+The host scans two directories, in this order:
 
-1. `$XDG_CONFIG_HOME/reclass-rs/plugins/` (if `$XDG_CONFIG_HOME` is set)
-2. `$HOME/.config/reclass-rs/plugins/` (default `$XDG_CONFIG_HOME` location)
-3. `plugins/` directory next to the binary (release bundle)
+1. `$XDG_CONFIG_HOME/reclass-rs/plugins/`, or `$HOME/.config/reclass-rs/plugins/` when `$XDG_CONFIG_HOME` is unset (`./.reclass-rs/plugins/` when neither is set)
+2. `plugins/` next to the binary (what the release tarball ships)
 
-All three directories are scanned; missing directories are skipped silently. Plugins are discovered by file extension (`.so`, `.dylib`, `.dll`).
+Both are scanned — the config directory first — and a missing one is skipped silently. Plugins are discovered by file extension (`.so`, `.dylib`, `.dll`). Loading happens in GUI builds only; a `--tui`-only build has no plugin host.
 
 ## Lifecycle Hooks
 

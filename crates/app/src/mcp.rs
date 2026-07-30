@@ -355,7 +355,9 @@ fn to_text(v: &Value) -> String {
 
 /// Kind-argument documentation shared by every tool that takes one.
 const KIND_DOC: &str = "Field type. Shorthand string: u8/u16/u32/u64, i8/i16/i32/i64, \
-f32, f64, bool, ptr, fnptr, hex8/hex16/hex32/hex64 (hex=hex64), vec2/vec3/vec4. \
+f32, f64, bool, ptr, fnptr, hex8/hex16/hex32/hex64 (hex=hex64), vec2/vec3/vec4, \
+bits8/bits16/bits32/bits64, enum8/enum16/enum32/enum64 (enum=enum32, empty variant table), \
+cstr/wcstr (a followed char*/char16_t*, max 64). \
 Or a full NodeKind JSON object for complex types, e.g. {\"Array\":{\"element\":{\"Hex\":\"W64\"},\"count\":8}}, \
 {\"ClassPtr\":{\"class_id\":3}}, {\"ClassInstance\":{\"class_id\":3}}, {\"Text\":{\"encoding\":\"Utf8\",\"len\":32}}, {\"Padding\":16}.";
 

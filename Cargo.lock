@@ -2820,7 +2820,7 @@ dependencies = [
 
 [[package]]
 name = "reclass"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "eframe",
@@ -2838,7 +2838,7 @@ dependencies = [
 
 [[package]]
 name = "reclass-backend-vmem"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "libc",
  "reclass-core",
@@ -2848,7 +2848,7 @@ dependencies = [
 
 [[package]]
 name = "reclass-core"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "criterion",
  "flate2",
@@ -2860,14 +2860,14 @@ dependencies = [
 
 [[package]]
 name = "reclass-example-plugin"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "reclass",
 ]
 
 [[package]]
 name = "reclass-official-plugins"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "reclass",
  "serde",
